@@ -14,3 +14,7 @@ export function computePartialFill(requested, remaining) {
         remainingAfter,
     };
 }
+export const partialFillMath = {
+    computePartialFill,
+};
+export default partialFillMath;

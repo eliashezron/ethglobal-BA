@@ -9,11 +9,32 @@ import { EventBus } from './modules/events/EventBus';
 export async function bootstrap() {
     const env = loadEnv();
     const events = new EventBus();
-    const nitroliteClient = new NitroliteClient(env.yellow);
+    const nitroliteClient = new NitroliteClient(env.yellow, events);
     const sessionManager = new SessionManager({ events, nitroliteClient });
     const orderService = new OrderService({ events, sessionManager });
     const fillCoordinator = new FillCoordinator({ events, sessionManager, orderService });
-    const matchEngine = new MatchEngine({ events, orderService });
+    const matchEngine = new MatchEngine({ events });
+    if (env.nodeEnv !== 'production') {
+        const watch = (event) => events.on(event, (payload) => {
+            console.log(`[${event}]`, payload);
+        });
+        watch('nitrolite.connection.initiated');
+        watch('nitrolite.connection.open');
+        watch('nitrolite.connection.closed');
+        watch('nitrolite.connection.error');
+        watch('nitrolite.auth.requested');
+        watch('nitrolite.auth.challenge');
+        watch('nitrolite.auth.verify.jwt');
+        watch('nitrolite.auth.verify.jwt_failed');
+        watch('nitrolite.auth.success');
+        watch('nitrolite.auth.failed');
+        watch('nitrolite.auth.error');
+        watch('nitrolite.rpc.error');
+        watch('nitrolite.message.AuthVerify');
+        watch('nitrolite.message.AuthChallenge');
+        watch('nitrolite.session.mismatch');
+        watch('nitrolite.session.generated');
+    }
     const context = {
         env,
         events,

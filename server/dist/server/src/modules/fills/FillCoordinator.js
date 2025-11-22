@@ -1,22 +1,39 @@
+import partialFillMath from '@shared/math/partialFill';
+const { computePartialFill } = partialFillMath;
 export class FillCoordinator {
     deps;
+    fills = new Map();
     constructor(deps) {
         this.deps = deps;
-        this.deps.events.on('fill.intent.received', (payload) => {
-            const fill = payload;
-            void this.initiateFill(fill);
-        });
     }
     async initiateFill(intent) {
-        // TODO: validation, residual checks, partial logic
-        const record = {
+        const order = this.deps.orderService.getOrder(intent.orderId);
+        if (!order) {
+            throw new Error('ORDER_NOT_FOUND');
+        }
+        const now = new Date().toISOString();
+        const proposed = {
             ...intent,
             status: 'proposed',
-            createdAt: new Date().toISOString(),
+            executedQuantity: 0n,
+            remainingAfter: order.remaining,
+            createdAt: now,
+            updatedAt: now,
+        };
+        this.fills.set(proposed.id, proposed);
+        this.deps.events.emit('fill.proposed', proposed);
+        await this.deps.sessionManager.prepareFill(intent);
+        const { executed, remainingAfter } = computePartialFill(intent.quantity, order.remaining);
+        const confirmed = {
+            ...proposed,
+            status: 'confirmed',
+            executedQuantity: executed,
+            remainingAfter,
             updatedAt: new Date().toISOString(),
         };
-        await this.deps.sessionManager.prepareFill(intent);
-        this.deps.events.emit('fill.proposed', record);
-        return record;
+        this.fills.set(confirmed.id, confirmed);
+        this.deps.orderService.updateRemaining(intent.orderId, remainingAfter);
+        this.deps.events.emit('fill.confirmed', confirmed);
+        return confirmed;
     }
 }

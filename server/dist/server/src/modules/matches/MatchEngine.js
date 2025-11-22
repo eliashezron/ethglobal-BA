@@ -2,9 +2,8 @@ export class MatchEngine {
     deps;
     constructor(deps) {
         this.deps = deps;
-        this.deps.events.on('order.intent.received', (payload) => {
-            const intent = payload;
-            this.deps.orderService.createOrder(intent);
+        this.deps.events.on('order.created', (order) => {
+            console.log('Match engine received new order', order.id);
         });
     }
 }
