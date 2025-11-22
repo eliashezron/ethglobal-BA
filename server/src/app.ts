@@ -1,6 +1,5 @@
 import { loadEnv } from './config/env';
-import { NitroliteClient } from './nitrolite/NitroliteClient';
-import { EventBus } from './nitrolite/events/EventBus';
+import { NitroliteClient, EventBus } from './nitrolite';
 
 export interface ApplicationContext {
   readonly env: ReturnType<typeof loadEnv>;
@@ -51,15 +50,8 @@ export async function bootstrap() {
 
   await nitroliteClient.connect();
 
-  if (env.nodeEnv !== 'production') {
-    const participant = '0x3E519A6Afa345b52E18B7497755961BbBEE371ce' as const;
-    void nitroliteClient.requestLedgerBalances(participant).catch((error) => {
-      events.emit('nitrolite.ledger.error', {
-        participant,
-        message: error instanceof Error ? error.message : String(error),
-      });
-    });
-  }
+  // Simplified client focuses on auth and channels
+  // Request ledger balances has been removed from the simplified API
 
   return context;
 }

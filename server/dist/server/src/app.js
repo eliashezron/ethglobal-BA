@@ -1,6 +1,6 @@
 import { loadEnv } from './config/env';
-import { NitroliteClient } from './modules/channels/NitroliteClient';
-import { EventBus } from './modules/events/EventBus';
+import { NitroliteClient } from './nitrolite/NitroliteClient';
+import { EventBus } from './nitrolite/events/EventBus';
 export async function bootstrap() {
     const env = loadEnv();
     const events = new EventBus();
