@@ -1,5 +1,5 @@
 import { loadEnv } from './config/env';
-import { NitroliteClient } from './modules/channels/NitroliteClient';
+import { NitroliteClient } from './modules/NitroliteClient';
 import { EventBus } from './modules/events/EventBus';
 
 export interface ApplicationContext {

@@ -21,8 +21,8 @@ import {
   type RPCAppSessionAllocation,
 } from '@erc7824/nitrolite';
 
-import type { YellowEnvConfig } from '../../config/env';
-import type { EventBus } from '../events/EventBus';
+import type { YellowEnvConfig } from '../config/env';
+import type { EventBus } from './events/EventBus';
 import type { ChannelStateUpdate } from '@shared/types/channel';
 import {
   generateSessionKey,
@@ -33,8 +33,8 @@ import {
   storeJWT,
   storeSessionKey,
   type SessionKey,
-} from '../../lib/utils';
-import { normalizeLedgerBalancesPayload } from '../../lib/asset_mgt';
+} from '../lib/utils';
+import { normalizeLedgerBalancesPayload } from '../lib/asset_mgt';
 
 type Address = `0x${string}`;
 type Hex = `0x${string}`;
