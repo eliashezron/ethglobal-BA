@@ -5,6 +5,7 @@ import {
   createAuthVerifyMessageFromChallenge,
   createAuthVerifyMessageWithJWT,
   createECDSAMessageSigner,
+  createAppSessionMessage,
   createGetChannelsMessage,
   createGetLedgerBalancesMessage,
   createPingMessage,
@@ -16,6 +17,8 @@ import {
   RPCMethod,
   EIP712AuthTypes,
   type MessageSigner,
+  type CreateAppSessionRequestParams,
+  type RPCAppSessionAllocation,
 } from '@erc7824/nitrolite';
 
 import type { YellowEnvConfig } from '../../config/env';
@@ -44,6 +47,7 @@ interface NitroliteMessageContext {
   readonly method: RPCMethod;
   readonly payload: unknown;
   readonly raw: unknown;
+  readonly requestId?: number;
 }
 
 type AuthAllowance = { asset: string; amount: string };
@@ -71,6 +75,31 @@ interface ChannelSnapshot {
   raw: Record<string, unknown>;
 }
 
+const DEFAULT_APP_SESSION_TIMEOUT_MS = 20_000;
+
+export interface AppSessionSnapshot {
+  appSessionId: string;
+  status?: string;
+  version?: number;
+  participants?: Address[];
+  weights?: number[];
+  quorum?: number;
+  challenge?: number;
+  nonce?: number;
+  protocol?: string;
+  sessionData?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  allocations?: Array<{ participant: Address; asset: string; amount: string }>;
+  raw: Record<string, unknown>;
+}
+
+interface PendingAppSessionRequest {
+  readonly resolve: (session: AppSessionSnapshot) => void;
+  readonly reject: (error: Error) => void;
+  readonly timer: NodeJS.Timeout;
+}
+
 export class NitroliteClient {
   private readonly wallet: ethers.Wallet;
   private readonly walletAddress: Address;
@@ -79,6 +108,7 @@ export class NitroliteClient {
   private readonly sessionKey: Address;
   private readonly sessionMessageSigner: MessageSigner;
   private readonly pendingLedgerRequests = new Map<number, { participant: Address; requestedAt: number }>();
+  private readonly pendingAppSessionRequests = new Map<number, PendingAppSessionRequest>();
 
   private socket?: WebSocket;
   private state: ConnectionState = 'idle';
@@ -143,9 +173,8 @@ export class NitroliteClient {
       storeSessionKey({ privateKey: this.sessionWallet.privateKey as Hex, address: derivedSessionKey });
     }
 
-      this.sessionMessageSigner = createECDSAMessageSigner(this.sessionWallet.privateKey as Hex);
-    this.jwtToken = getStoredJWT() ?? this.jwtToken;
-      this.jwtToken = getStoredJWT() ?? undefined;
+    this.sessionMessageSigner = createECDSAMessageSigner(this.sessionWallet.privateKey as Hex);
+    this.jwtToken = getStoredJWT() ?? undefined;
   }
 
   get address(): Address {
@@ -289,8 +318,13 @@ export class NitroliteClient {
 
     const method = getMethod(parsed) as RPCMethod | undefined;
     const error = getError(parsed);
+    const requestIdValue = getRequestId(parsed);
+    const requestId = typeof requestIdValue === 'number' ? requestIdValue : undefined;
     if (error) {
       this.events.emit('nitrolite.rpc.error', error);
+      if (requestId !== undefined) {
+        this.rejectPendingAppSession(requestId, error.message ?? 'Nitrolite RPC error');
+      }
     }
 
     if (!method) {
@@ -299,7 +333,7 @@ export class NitroliteClient {
     }
 
     const payload = parsed.req ? getParams(parsed) : getResult(parsed);
-    const context: NitroliteMessageContext = { method, payload, raw: parsed };
+    const context: NitroliteMessageContext = { method, payload, raw: parsed, requestId };
 
     switch (method) {
       case RPCMethod.AuthChallenge:
@@ -313,6 +347,12 @@ export class NitroliteClient {
         break;
       case RPCMethod.GetChannels:
         this.handleGetChannels(context);
+        break;
+      case RPCMethod.CreateAppSession:
+        this.handleCreateAppSession(context);
+        break;
+      case RPCMethod.AppSessionUpdate:
+        this.handleAppSessionUpdate(context);
         break;
       case RPCMethod.GetLedgerBalances:
         this.handleGetLedgerBalances(context);
@@ -461,20 +501,58 @@ export class NitroliteClient {
     });
   }
 
-  private handleGetLedgerBalances({ payload, raw }: NitroliteMessageContext) {
-    const requestId = this.pickRequestId(raw);
-    const pending = typeof requestId === 'number' ? this.pendingLedgerRequests.get(requestId) : undefined;
-    const participant = pending?.participant ?? this.pickParticipantFromPayload(payload);
+  private handleCreateAppSession({ payload, requestId }: NitroliteMessageContext) {
+    const session = this.normalizeAppSessionPayload(payload);
+
+    if (!session) {
+      if (typeof requestId === 'number') {
+        this.rejectPendingAppSession(requestId, 'Unable to parse application session response');
+      }
+      return;
+    }
 
     if (typeof requestId === 'number') {
-      this.pendingLedgerRequests.delete(requestId);
+      const pending = this.pendingAppSessionRequests.get(requestId);
+      if (pending) {
+        this.pendingAppSessionRequests.delete(requestId);
+        clearTimeout(pending.timer);
+        pending.resolve(session);
+      }
+    }
+
+    this.events.emit('nitrolite.app_session.created', {
+      requestId,
+      session,
+    });
+  }
+
+  private handleAppSessionUpdate({ payload, requestId }: NitroliteMessageContext) {
+    const session = this.normalizeAppSessionPayload(payload);
+
+    if (!session) {
+      return;
+    }
+
+    this.events.emit('nitrolite.app_session.updated', {
+      requestId,
+      session,
+    });
+  }
+
+  private handleGetLedgerBalances({ payload, requestId, raw }: NitroliteMessageContext) {
+    const resolvedRequestId = requestId ?? this.pickRequestId(raw);
+    const pending = typeof resolvedRequestId === 'number' ? this.pendingLedgerRequests.get(resolvedRequestId) : undefined;
+    const participant = pending?.participant ?? this.pickParticipantFromPayload(payload);
+
+    if (typeof resolvedRequestId === 'number') {
+      this.pendingLedgerRequests.delete(resolvedRequestId);
     }
 
     const balances = normalizeLedgerBalancesPayload(payload);
 
     this.events.emit('nitrolite.ledger.received', {
       participant,
-      requestId,
+      requestId: resolvedRequestId,
       balances,
       raw: payload,
     });
@@ -566,6 +644,75 @@ export class NitroliteClient {
       });
       throw error;
     }
+  }
+
+  async requestAppSession(
+    params: CreateAppSessionRequestParams,
+    timeoutMs = DEFAULT_APP_SESSION_TIMEOUT_MS,
+  ): Promise<AppSessionSnapshot> {
+    const socket = this.socket;
+
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      throw new Error('Nitrolite client not connected');
+    }
+
+    const message = await createAppSessionMessage(this.sessionMessageSigner, params);
+    let requestId: number | undefined;
+
+    try {
+      const parsed = JSON.parse(message) as { req?: unknown };
+      if (Array.isArray(parsed?.req) && typeof parsed.req[0] === 'number') {
+        requestId = parsed.req[0];
+      }
+    } catch (error) {
+      this.events.emit('nitrolite.app_session.error', {
+        context: 'parse_request_id',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (typeof requestId !== 'number') {
+      throw new Error('Unable to determine request id for app session request');
+    }
+
+    return await new Promise<AppSessionSnapshot>((resolve, reject) => {
+      if (this.pendingAppSessionRequests.has(requestId)) {
+        reject(new Error(`App session request already pending for id ${requestId}`));
+        return;
+      }
+
+      const timer = setTimeout(() => {
+        this.events.emit('nitrolite.app_session.timeout', { requestId, timeoutMs });
+        this.rejectPendingAppSession(
+          requestId,
+          new Error(`Timeout waiting for app session response (request ${requestId})`),
+        );
+      }, timeoutMs);
+
+      this.pendingAppSessionRequests.set(requestId, {
+        resolve: (session) => {
+          clearTimeout(timer);
+          resolve(session);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+        timer,
+      });
+
+      try {
+        socket.send(message);
+        this.events.emit('nitrolite.app_session.requested', { requestId, params });
+      } catch (error) {
+        const wrapped = error instanceof Error ? error : new Error(String(error));
+        this.events.emit('nitrolite.app_session.error', {
+          requestId,
+          message: wrapped.message,
+        });
+        this.rejectPendingAppSession(requestId, wrapped);
+      }
+    });
   }
 
   private startHeartbeat() {
@@ -768,11 +915,212 @@ export class NitroliteClient {
     return undefined;
   }
 
+  private rejectPendingAppSession(requestId: number, reason: string | Error) {
+    const pending = this.pendingAppSessionRequests.get(requestId);
+    if (!pending) {
+      return;
+    }
+
+    this.pendingAppSessionRequests.delete(requestId);
+    clearTimeout(pending.timer);
+    const error = reason instanceof Error ? reason : new Error(reason);
+    pending.reject(error);
+    this.events.emit('nitrolite.app_session.rejected', {
+      requestId,
+      message: error.message,
+    });
+  }
+
   private extractTuple(record: Record<string, unknown>, key: 'req' | 'res' | 'err'): unknown[] | undefined {
     const value = record[key];
     if (Array.isArray(value)) {
       return value;
     }
+    return undefined;
+  }
+
+  private normalizeAppSessionPayload(payload: unknown): AppSessionSnapshot | undefined {
+    const record = this.findAppSessionRecord(this.unwrapPayload(payload));
+    if (!record) {
+      this.events.emit('nitrolite.app_session.unparsed', { payload });
+      return undefined;
+    }
+
+    const appSessionId = this.pickString(record, ['appSessionId', 'app_session_id', 'sessionId', 'session_id', 'id']);
+    if (!appSessionId) {
+      this.events.emit('nitrolite.app_session.unparsed', { payload: record });
+      return undefined;
+    }
+
+    const participants = this.pickAddressArray(record, ['participants', 'partyAddresses']);
+    const weights = this.pickNumberArray(record, ['weights']);
+    const allocations = this.extractAppSessionAllocations(record);
+
+    return {
+      appSessionId,
+      status: this.pickString(record, ['status']),
+      version: this.pickNumber(record, ['version']),
+      participants,
+      weights,
+      quorum: this.pickNumber(record, ['quorum']),
+      challenge: this.pickNumber(record, ['challenge']),
+      nonce: this.pickNumber(record, ['nonce']),
+      protocol: this.pickString(record, ['protocol']),
+      sessionData: this.pickString(record, ['sessionData', 'session_data']),
+      createdAt: this.pickString(record, ['createdAt', 'created_at']),
+      updatedAt: this.pickString(record, ['updatedAt', 'updated_at']),
+      allocations,
+      raw: record,
+    };
+  }
+
+  private findAppSessionRecord(payload: unknown): Record<string, unknown> | undefined {
+    if (!payload) {
+      return undefined;
+    }
+
+    if (Array.isArray(payload)) {
+      for (const item of payload) {
+        const result = this.findAppSessionRecord(item);
+        if (result) {
+          return result;
+        }
+      }
+      return undefined;
+    }
+
+    if (!this.isRecord(payload)) {
+      return undefined;
+    }
+
+    if (this.isAppSessionRecord(payload)) {
+      return payload;
+    }
+
+    const nestedKeys = [
+      'appSession',
+      'app_session',
+      'session',
+      'sessions',
+      'appSessions',
+      'items',
+      'params',
+      'result',
+      'data',
+      'payload',
+    ];
+
+    for (const key of nestedKeys) {
+      if (payload[key] !== undefined) {
+        const result = this.findAppSessionRecord(payload[key]);
+        if (result) {
+          return result;
+        }
+      }
+    }
+
+    for (const value of Object.values(payload)) {
+      if (value !== undefined) {
+        const result = this.findAppSessionRecord(value);
+        if (result) {
+          return result;
+        }
+      }
+    }
+
+    return undefined;
+  }
+
+  private isAppSessionRecord(record: Record<string, unknown>): boolean {
+    return (
+      typeof record.appSessionId === 'string' ||
+      typeof record.app_session_id === 'string' ||
+      typeof record.sessionId === 'string' ||
+      typeof record.session_id === 'string'
+    );
+  }
+
+  private pickAddressArray(record: Record<string, unknown>, keys: string[]): Address[] | undefined {
+    for (const key of keys) {
+      const value = record[key];
+      if (Array.isArray(value) && value.length > 0) {
+        const addresses: Address[] = [];
+        let valid = true;
+        for (const entry of value) {
+          if (typeof entry === 'string' && /^0x[a-fA-F0-9]{40}$/.test(entry)) {
+            addresses.push(entry as Address);
+          } else {
+            valid = false;
+            break;
+          }
+        }
+        if (valid) {
+          return addresses;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private pickNumberArray(record: Record<string, unknown>, keys: string[]): number[] | undefined {
+    for (const key of keys) {
+      const value = record[key];
+      if (Array.isArray(value) && value.length > 0) {
+        const numbers: number[] = [];
+        let valid = true;
+        for (const entry of value) {
+          if (typeof entry === 'number' && Number.isFinite(entry)) {
+            numbers.push(entry);
+          } else if (typeof entry === 'string' && entry.length > 0 && !Number.isNaN(Number(entry))) {
+            numbers.push(Number(entry));
+          } else if (typeof entry === 'bigint') {
+            numbers.push(Number(entry));
+          } else {
+            valid = false;
+            break;
+          }
+        }
+        if (valid) {
+          return numbers;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private extractAppSessionAllocations(
+    record: Record<string, unknown>,
+  ): AppSessionSnapshot['allocations'] | undefined {
+    const candidates = [record['allocations'], record['sessionAllocations'], record['session_allocation']];
+
+    for (const candidate of candidates) {
+      if (!Array.isArray(candidate) || candidate.length === 0) {
+        continue;
+      }
+
+      const allocations: AppSessionSnapshot['allocations'] = [];
+
+      for (const entry of candidate as RPCAppSessionAllocation[]) {
+        if (!this.isRecord(entry)) {
+          continue;
+        }
+
+        const participant = this.pickAddress(entry, ['participant', 'address', 'destination']);
+        const asset = this.pickString(entry, ['asset', 'token']);
+        const amount = this.pickAmount(entry);
+
+        if (participant && asset && amount) {
+          allocations.push({ participant, asset, amount });
+        } else {
+          this.events.emit('nitrolite.app_session.allocations.unparsed', { entry });
+        }
+      }
+
+      if (allocations.length > 0) {
+        return allocations;
+      }
+    }
+
     return undefined;
   }
 
