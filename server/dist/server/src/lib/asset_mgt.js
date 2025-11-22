@@ -14,6 +14,13 @@ export function normalizeLedgerBalancesPayload(payload) {
             continue;
         }
         if (isLedgerBalanceRecord(current)) {
+            const nestedCandidates = ['balances', 'ledger_balances', 'entries', 'items', 'results'];
+            nestedCandidates.forEach((key) => {
+                const value = current[key];
+                if (Array.isArray(value)) {
+                    queue.push(...value);
+                }
+            });
             const asset = pickString(current, ['asset', 'symbol', 'ticker']);
             const token = pickAddress(current, ['token', 'address']);
             const amount = pickAmount(current, ['amount', 'balance', 'value']);
