@@ -1,7 +1,8 @@
 import { WebSocket } from 'ws';
 import { ethers } from 'ethers';
-import { createAuthRequestMessage, createAuthVerifyMessageFromChallenge, createAuthVerifyMessageWithJWT, createECDSAMessageSigner, createGetChannelsMessage, createPingMessage, getError, getMethod, getParams, getResult, RPCMethod, EIP712AuthTypes, } from '@erc7824/nitrolite';
+import { createAuthRequestMessage, createAuthVerifyMessageFromChallenge, createAuthVerifyMessageWithJWT, createECDSAMessageSigner, createGetChannelsMessage, createGetLedgerBalancesMessage, createPingMessage, getError, getMethod, getParams, getResult, getRequestId, RPCMethod, EIP712AuthTypes, } from '@erc7824/nitrolite';
 import { generateSessionKey, getStoredJWT, getStoredSessionKey, removeJWT, removeSessionKey, storeJWT, storeSessionKey, } from '../../lib/utils';
+import { normalizeLedgerBalancesPayload } from '../../lib/asset_mgt';
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 export class NitroliteClient {
     config;
@@ -12,6 +13,7 @@ export class NitroliteClient {
     sessionWallet;
     sessionKey;
     sessionMessageSigner;
+    pendingLedgerRequests = new Map();
     socket;
     state = 'idle';
     jwtToken;
@@ -219,6 +221,9 @@ export class NitroliteClient {
             case RPCMethod.GetChannels:
                 this.handleGetChannels(context);
                 break;
+            case RPCMethod.GetLedgerBalances:
+                this.handleGetLedgerBalances(context);
+                break;
             default:
                 this.events.emit(`nitrolite.message.${method}`, payload);
         }
@@ -335,6 +340,21 @@ export class NitroliteClient {
             channels: channels.map(({ raw, ...summary }) => summary),
         });
     }
+    handleGetLedgerBalances({ payload, raw }) {
+        const requestId = this.pickRequestId(raw);
+        const pending = typeof requestId === 'number' ? this.pendingLedgerRequests.get(requestId) : undefined;
+        const participant = pending?.participant ?? this.pickParticipantFromPayload(payload);
+        if (typeof requestId === 'number') {
+            this.pendingLedgerRequests.delete(requestId);
+        }
+        const balances = normalizeLedgerBalancesPayload(payload);
+        this.events.emit('nitrolite.ledger.received', {
+            participant,
+            requestId,
+            balances,
+            raw: payload,
+        });
+    }
     safeLoadSessionKey() {
         try {
             return getStoredSessionKey() ?? undefined;
@@ -379,6 +399,45 @@ export class NitroliteClient {
             this.events.emit('nitrolite.channels.error', {
                 message: error instanceof Error ? error.message : String(error),
             });
+        }
+    }
+    async requestLedgerBalances(participant = this.walletAddress) {
+        if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+            throw new Error('Nitrolite client not connected');
+        }
+        try {
+            const message = await createGetLedgerBalancesMessage(this.sessionMessageSigner, participant);
+            let requestId;
+            try {
+                const parsed = JSON.parse(message);
+                if (parsed?.req && typeof parsed.req[0] === 'number') {
+                    requestId = parsed.req[0];
+                    this.pendingLedgerRequests.set(requestId, {
+                        participant,
+                        requestedAt: Date.now(),
+                    });
+                }
+            }
+            catch (parseError) {
+                this.events.emit('nitrolite.ledger.error', {
+                    participant,
+                    message: parseError instanceof Error ? parseError.message : String(parseError),
+                });
+            }
+            this.socket.send(message);
+            this.events.emit('nitrolite.ledger.requested', {
+                participant,
+                requestId,
+            });
+            return requestId;
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.events.emit('nitrolite.ledger.error', {
+                participant,
+                message,
+            });
+            throw error;
         }
     }
     startHeartbeat() {
@@ -500,6 +559,9 @@ export class NitroliteClient {
             if (typeof value === 'number' && Number.isFinite(value)) {
                 return value;
             }
+            if (typeof value === 'bigint') {
+                return Number(value);
+            }
         }
         return undefined;
     }
@@ -527,6 +589,77 @@ export class NitroliteClient {
     }
     isRecord(value) {
         return typeof value === 'object' && value !== null;
+    }
+    pickParticipantFromPayload(payload) {
+        const target = this.extractNestedRecord(payload, ['participant', 'owner']);
+        if (typeof target === 'string' && /^0x[a-fA-F0-9]{40}$/.test(target)) {
+            return target;
+        }
+        return undefined;
+    }
+    pickRequestId(raw) {
+        try {
+            if (this.isRecord(raw)) {
+                const req = this.extractTuple(raw, 'req');
+                if (typeof req?.[0] === 'number') {
+                    return req[0];
+                }
+                const res = this.extractTuple(raw, 'res');
+                if (typeof res?.[0] === 'number') {
+                    return res[0];
+                }
+                const requestId = getRequestId(raw);
+                if (typeof requestId === 'number') {
+                    return requestId;
+                }
+            }
+        }
+        catch {
+            /* ignore */
+        }
+        return undefined;
+    }
+    extractTuple(record, key) {
+        const value = record[key];
+        if (Array.isArray(value)) {
+            return value;
+        }
+        return undefined;
+    }
+    extractNestedRecord(payload, keys) {
+        if (!payload)
+            return undefined;
+        if (Array.isArray(payload)) {
+            for (const item of payload) {
+                const match = this.extractNestedRecord(item, keys);
+                if (match !== undefined) {
+                    return match;
+                }
+            }
+            return undefined;
+        }
+        if (!this.isRecord(payload)) {
+            return undefined;
+        }
+        for (const key of keys) {
+            const value = payload[key];
+            if (value !== undefined) {
+                return value;
+            }
+        }
+        if (Array.isArray(payload.params)) {
+            return this.extractNestedRecord(payload.params, keys);
+        }
+        if (Array.isArray(payload.result)) {
+            return this.extractNestedRecord(payload.result, keys);
+        }
+        if (payload.params) {
+            return this.extractNestedRecord(payload.params, keys);
+        }
+        if (payload.result) {
+            return this.extractNestedRecord(payload.result, keys);
+        }
+        return undefined;
     }
     createAuthVerifyMessageSigner() {
         return async (payload) => {

@@ -37,6 +37,9 @@ export async function bootstrap() {
         watch('nitrolite.channels.requested');
         watch('nitrolite.channels.received');
         watch('nitrolite.channels.entry');
+        watch('nitrolite.ledger.requested');
+        watch('nitrolite.ledger.received');
+        watch('nitrolite.ledger.error');
     }
     const context = {
         env,
@@ -48,6 +51,15 @@ export async function bootstrap() {
         matchEngine,
     };
     await nitroliteClient.connect();
+    if (env.nodeEnv !== 'production') {
+        const participant = '0x3E519A6Afa345b52E18B7497755961BbBEE371ce';
+        void nitroliteClient.requestLedgerBalances(participant).catch((error) => {
+            events.emit('nitrolite.ledger.error', {
+                participant,
+                message: error instanceof Error ? error.message : String(error),
+            });
+        });
+    }
     buildServer({ context });
     return context;
 }
