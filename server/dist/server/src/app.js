@@ -34,6 +34,9 @@ export async function bootstrap() {
         watch('nitrolite.message.AuthChallenge');
         watch('nitrolite.session.mismatch');
         watch('nitrolite.session.generated');
+        watch('nitrolite.channels.requested');
+        watch('nitrolite.channels.received');
+        watch('nitrolite.channels.entry');
     }
     const context = {
         env,

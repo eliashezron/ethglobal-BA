@@ -216,6 +216,9 @@ export class NitroliteClient {
             case RPCMethod.Error:
                 this.handleError(context);
                 break;
+            case RPCMethod.GetChannels:
+                this.handleGetChannels(context);
+                break;
             default:
                 this.events.emit(`nitrolite.message.${method}`, payload);
         }
@@ -301,6 +304,37 @@ export class NitroliteClient {
             removeSessionKey();
         }
     }
+    handleGetChannels({ payload }) {
+        const unwrapped = this.unwrapPayload(payload);
+        const channels = this.normalizeChannelsPayload(unwrapped);
+        if (channels.length === 0) {
+            this.events.emit('nitrolite.channels.received', {
+                count: 0,
+                raw: unwrapped,
+            });
+            return;
+        }
+        channels.forEach((channel, index) => {
+            this.events.emit('nitrolite.channels.entry', {
+                index,
+                channelId: channel.channelId,
+                participant: channel.participant,
+                wallet: channel.wallet,
+                status: channel.status,
+                token: channel.token,
+                amount: channel.amount,
+                chainId: channel.chainId,
+                adjudicator: channel.adjudicator,
+                createdAt: channel.createdAt,
+                updatedAt: channel.updatedAt,
+                raw: channel.raw,
+            });
+        });
+        this.events.emit('nitrolite.channels.received', {
+            count: channels.length,
+            channels: channels.map(({ raw, ...summary }) => summary),
+        });
+    }
     safeLoadSessionKey() {
         try {
             return getStoredSessionKey() ?? undefined;
@@ -336,6 +370,10 @@ export class NitroliteClient {
         try {
             const message = await createGetChannelsMessage(this.sessionMessageSigner, this.walletAddress);
             this.socket.send(message);
+            this.events.emit('nitrolite.channels.requested', {
+                participant: this.walletAddress,
+                sessionKey: this.sessionKey,
+            });
         }
         catch (error) {
             this.events.emit('nitrolite.channels.error', {
@@ -370,7 +408,7 @@ export class NitroliteClient {
         this.pendingAuth = authContext;
         const authRequest = await createAuthRequestMessage({
             address: this.walletAddress,
-            session_key: authContext.participant,
+            session_key: authContext.sessionKey,
             app_name: this.config.applicationName,
             allowances: authContext.allowances,
             expire: authContext.expire,
@@ -381,7 +419,8 @@ export class NitroliteClient {
         this.events.emit('nitrolite.auth.requested', {
             address: this.walletAddress,
             application: authContext.application,
-            sessionKey: authContext.participant,
+            participant: authContext.participant,
+            sessionKey: authContext.sessionKey,
             expiresAt: authContext.expire,
             reason,
         });
@@ -391,10 +430,103 @@ export class NitroliteClient {
         return {
             scope: this.config.authScope,
             application: this.applicationAddress,
-            participant: this.sessionKey,
+            participant: this.walletAddress,
+            sessionKey: this.sessionKey,
             expire,
             allowances: [],
         };
+    }
+    normalizeChannelsPayload(payload) {
+        const entries = this.extractChannelEntries(payload);
+        return this.normalizeChannelEntries(entries);
+    }
+    extractChannelEntries(payload) {
+        if (!payload) {
+            return [];
+        }
+        if (Array.isArray(payload)) {
+            return payload.filter((value) => this.isRecord(value));
+        }
+        if (this.isRecord(payload)) {
+            if (Array.isArray(payload.channels)) {
+                return payload.channels.filter((value) => this.isRecord(value));
+            }
+            if (Array.isArray(payload.items)) {
+                return payload.items.filter((value) => this.isRecord(value));
+            }
+            if (payload.channel || payload.channel_id || payload.channelId) {
+                return [payload];
+            }
+        }
+        return [];
+    }
+    normalizeChannelEntries(entries) {
+        const channels = [];
+        entries.forEach((entry) => {
+            const channelId = this.pickString(entry, ['channelId', 'channel_id']);
+            const token = this.pickAddress(entry, ['token']);
+            if (!channelId || !token) {
+                this.events.emit('nitrolite.channels.unparsed', { entry });
+                return;
+            }
+            channels.push({
+                channelId,
+                participant: this.pickAddress(entry, ['participant']),
+                wallet: this.pickAddress(entry, ['wallet']),
+                status: this.pickString(entry, ['status']),
+                token,
+                amount: this.pickAmount(entry),
+                chainId: this.pickNumber(entry, ['chainId', 'chain_id']),
+                adjudicator: this.pickAddress(entry, ['adjudicator']),
+                createdAt: this.pickString(entry, ['createdAt', 'created_at']),
+                updatedAt: this.pickString(entry, ['updatedAt', 'updated_at']),
+                raw: entry,
+            });
+        });
+        return channels;
+    }
+    pickString(record, keys) {
+        for (const key of keys) {
+            const value = record[key];
+            if (typeof value === 'string' && value.length > 0) {
+                return value;
+            }
+        }
+        return undefined;
+    }
+    pickNumber(record, keys) {
+        for (const key of keys) {
+            const value = record[key];
+            if (typeof value === 'number' && Number.isFinite(value)) {
+                return value;
+            }
+        }
+        return undefined;
+    }
+    pickAddress(record, keys) {
+        for (const key of keys) {
+            const value = record[key];
+            if (typeof value === 'string' && /^0x[a-fA-F0-9]{40}$/.test(value)) {
+                return value;
+            }
+        }
+        return undefined;
+    }
+    pickAmount(record) {
+        const value = record.amount ?? record.balance ?? record.value;
+        if (typeof value === 'string') {
+            return value;
+        }
+        if (typeof value === 'number') {
+            return value.toString();
+        }
+        if (typeof value === 'bigint') {
+            return value.toString();
+        }
+        return undefined;
+    }
+    isRecord(value) {
+        return typeof value === 'object' && value !== null;
     }
     createAuthVerifyMessageSigner() {
         return async (payload) => {
