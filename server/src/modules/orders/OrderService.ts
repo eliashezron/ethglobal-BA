@@ -10,12 +10,7 @@ interface OrderServiceDependencies {
 export class OrderService {
   private readonly orders = new Map<string, OrderRecord>();
 
-  constructor(private readonly deps: OrderServiceDependencies) {
-    this.deps.events.on('fill.confirmed', (payload) => {
-      const fill = payload as { orderId: string; remainingSize: bigint };
-      this.updateRemaining(fill.orderId, fill.remainingSize);
-    });
-  }
+  constructor(private readonly deps: OrderServiceDependencies) {}
 
   createOrder(intent: OrderIntent): OrderRecord {
     const record: OrderRecord = {
@@ -41,5 +36,9 @@ export class OrderService {
     order.status = remaining === 0n ? 'filled' : 'partially_filled';
     order.updatedAt = new Date().toISOString();
     this.orders.set(orderId, order);
+    this.deps.events.emit('order.updated', order);
+    if (order.status === 'filled') {
+      this.deps.events.emit('order.filled', order);
+    }
   }
 }

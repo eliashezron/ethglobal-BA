@@ -14,7 +14,10 @@ interface ConnectionRecord {
 }
 
 function serialize(type: string, payload: unknown): string {
-  return JSON.stringify({ type, payload });
+  return JSON.stringify(
+    { type, payload },
+    (_key, value) => (typeof value === 'bigint' ? value.toString() : value)
+  );
 }
 
 function safeParse(raw: string): MessageEnvelope | undefined {
@@ -51,8 +54,10 @@ export function buildServer({ context }: BuildServerOptions) {
   };
 
   context.events.on('order.created', (payload) => broadcast('order.created', payload));
+  context.events.on('order.updated', (payload) => broadcast('order.updated', payload));
   context.events.on('fill.proposed', (payload) => broadcast('fill.proposed', payload));
   context.events.on('fill.confirmed', (payload) => broadcast('fill.confirmed', payload));
+  context.events.on('order.filled', (payload) => broadcast('order.filled', payload));
   context.events.on('orderbook.snapshot.publish', (payload) => broadcast('orderbook.snapshot', payload));
 
   wss.on('connection', (socket: WebSocket, request: IncomingMessage) => {
@@ -72,9 +77,17 @@ export function buildServer({ context }: BuildServerOptions) {
         return;
       }
 
-      router.handle(message, {
-        connectionId,
-        send: (type, payload) => send(socket, type, payload),
+      Promise.resolve(
+        router.handle(message, {
+          connectionId,
+          send: (type, payload) => send(socket, type, payload),
+        })
+      ).catch((error) => {
+        console.error('Router handler failed', error);
+        send(socket, 'error', {
+          code: 'INTERNAL_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
       });
     });
 

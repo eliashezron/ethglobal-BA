@@ -23,3 +23,9 @@ export function computePartialFill(requested: bigint, remaining: bigint): Partia
     remainingAfter,
   };
 }
+
+export const partialFillMath = {
+  computePartialFill,
+};
+
+export default partialFillMath;

@@ -15,6 +15,8 @@ export interface FillIntent {
 
 export interface FillRecord extends FillIntent {
   status: FillStatus;
+  executedQuantity: bigint;
+  remainingAfter: bigint;
   readonly createdAt: string;
   updatedAt: string;
 }

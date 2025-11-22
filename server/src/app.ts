@@ -24,7 +24,7 @@ export async function bootstrap() {
   const sessionManager = new SessionManager({ events, nitroliteClient });
   const orderService = new OrderService({ events, sessionManager });
   const fillCoordinator = new FillCoordinator({ events, sessionManager, orderService });
-  const matchEngine = new MatchEngine({ events, orderService });
+  const matchEngine = new MatchEngine({ events });
 
   const context: ApplicationContext = {
     env,
