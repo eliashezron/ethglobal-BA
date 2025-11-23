@@ -123,7 +123,8 @@ export default function Home() {
     try {
       if (editingOrderId) {
         // Update existing order in Supabase
-        await orderService.updateOrder(editingOrderId, {
+        const updatePayload = {
+          side,
           sell_token: sellToken,
           buy_token: buyToken,
           sell_amount: sellAmount,
@@ -131,25 +132,18 @@ export default function Home() {
           price: orderType === "limit" ? limitPrice : marketPrice.toString(),
           order_type: orderType,
           expiry,
-        });
+          status: "open" as const, // Ensure status remains open
+        };
         
-        // Update local state
-        setUserOrders((prev) =>
-          prev.map((order) =>
-            order.id === editingOrderId
-              ? {
-                  ...order,
-                  sellToken,
-                  buyToken,
-                  sellAmount,
-                  buyAmount,
-                  price: orderType === "limit" ? limitPrice : marketPrice.toString(),
-                  orderType,
-                  expiry,
-                }
-              : order
-          )
-        );
+        console.log('Updating order with payload:', updatePayload);
+        
+        const updatedOrder = await orderService.updateOrder(editingOrderId, updatePayload);
+        
+        console.log('Order updated successfully:', updatedOrder);
+        
+        // Fetch fresh data from Supabase
+        await loadOrders(walletAddress);
+        
         setEditingOrderId(null);
       } else {
         // Create new order in Supabase
@@ -168,32 +162,22 @@ export default function Home() {
           status: "open" as const,
         };
 
-        await orderService.createOrder(newOrder);
-
-        // Add to local state
-        const localOrder: UserOrder = {
-          id: orderId,
-          side,
-          sellToken,
-          buyToken,
-          sellAmount,
-          buyAmount,
-          price: orderType === "limit" ? limitPrice : marketPrice.toString(),
-          orderType,
-          expiry,
-          status: "open",
-          timestamp: Date.now(),
-        };
-        setUserOrders((prev) => [localOrder, ...prev]);
+        const createdOrder = await orderService.createOrder(newOrder);
+        
+        console.log('Order created successfully:', createdOrder);
+        
+        // Fetch fresh data from Supabase
+        await loadOrders(walletAddress);
       }
 
       // Reset form
       setSellAmount("");
       setBuyAmount("");
       setLimitPrice("");
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error submitting order:", error);
-      alert("Failed to submit order. Please try again.");
+      const errorMsg = error?.message || "Failed to submit order. Please try again.";
+      alert(errorMsg);
     }
   };
 
@@ -211,6 +195,9 @@ export default function Home() {
       const address = accounts[0];
       setWalletAddress(address);
       
+      // Save to localStorage for persistence
+      localStorage.setItem('walletAddress', address);
+      
       // Load user's orders from Supabase
       await loadOrders(address);
     } catch (error) {
@@ -222,11 +209,21 @@ export default function Home() {
 
   const disconnectWallet = () => {
     setWalletAddress(null);
+    setUserOrders([]);
+    localStorage.removeItem('walletAddress');
   };
 
   const formatAddress = (address: string) => {
     return `${address.slice(0, 6)}...${address.slice(-4)}`;
   };
+
+  // Check for previously connected wallet on mount
+  useEffect(() => {
+    const savedAddress = localStorage.getItem('walletAddress');
+    if (savedAddress) {
+      setWalletAddress(savedAddress);
+    }
+  }, []);
 
   // Load orders when wallet is connected
   useEffect(() => {
@@ -260,6 +257,7 @@ export default function Home() {
   };
 
   const handleEditOrder = (order: UserOrder) => {
+    console.log('Editing order:', order);
     setEditingOrderId(order.id);
     setSellToken(order.sellToken);
     setBuyToken(order.buyToken);
@@ -269,6 +267,9 @@ export default function Home() {
     setOrderType(order.orderType);
     setExpiry(order.expiry);
     setSide(order.side);
+    
+    // Scroll to top of page to show the form
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleCancelOrder = async (orderId: string) => {
@@ -398,7 +399,17 @@ export default function Home() {
           </div>
 
           {/* Order Form */}
-          <div className="lg:col-span-2 bg-zinc-900 rounded-lg p-6">
+          <div className={`lg:col-span-2 bg-zinc-900 rounded-lg p-6 ${editingOrderId ? 'ring-2 ring-blue-500' : ''}`}>
+            {/* Editing Indicator */}
+            {editingOrderId && (
+              <div className="mb-4 p-3 bg-blue-900/30 border border-blue-500 rounded-lg flex items-center gap-2">
+                <svg className="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                </svg>
+                <span className="text-blue-300 font-medium">Editing Order #{editingOrderId.slice(-8)}</span>
+              </div>
+            )}
+            
             {/* Order Type Selector */}
             <div className="flex gap-2 mb-6">
               <button
