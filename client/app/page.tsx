@@ -127,18 +127,38 @@ export default function Home() {
     }
 
     try {
+      // Determine correct amounts based on Long/Short tab
+      let finalSellAmount = sellAmount;
+      let finalBuyAmount = buyAmount;
+      let finalSellToken = sellToken;
+      let finalBuyToken = buyToken;
+      
+      if (orderFormTab === "long") {
+        // Long = buying ETH with USDC
+        finalSellToken = "USDC";
+        finalBuyToken = "ETH";
+        finalSellAmount = buyAmount; // USDC amount (total)
+        finalBuyAmount = buyAmount; // ETH amount
+      } else {
+        // Short = selling ETH for USDC
+        finalSellToken = "ETH";
+        finalBuyToken = "USDC";
+        finalSellAmount = sellAmount; // ETH amount
+        finalBuyAmount = sellAmount; // USDC amount (total)
+      }
+
       if (editingOrderId) {
         // Update existing order in Supabase
         const updatePayload = {
           side,
-          sell_token: sellToken,
-          buy_token: buyToken,
-          sell_amount: sellAmount,
-          buy_amount: buyAmount,
-          price: orderType === "limit" ? limitPrice : marketPrice.toString(),
-          order_type: orderType,
+          sell_token: finalSellToken,
+          buy_token: finalBuyToken,
+          sell_amount: orderFormTab === "long" ? finalSellAmount : sellAmount,
+          buy_amount: orderFormTab === "long" ? buyAmount : finalBuyAmount,
+          price: limitPrice || marketPrice.toString(),
+          order_type: "limit" as const,
           expiry,
-          status: "open" as const, // Ensure status remains open
+          status: "open" as const,
         };
         
         console.log('Updating order with payload:', updatePayload);
@@ -161,12 +181,12 @@ export default function Home() {
           id: orderId,
           wallet_address: walletAddress,
           side,
-          sell_token: sellToken,
-          buy_token: buyToken,
-          sell_amount: sellAmount,
-          buy_amount: buyAmount,
-          price: orderType === "limit" ? limitPrice : marketPrice.toString(),
-          order_type: orderType,
+          sell_token: finalSellToken,
+          buy_token: finalBuyToken,
+          sell_amount: orderFormTab === "long" ? finalSellAmount : sellAmount,
+          buy_amount: orderFormTab === "long" ? buyAmount : finalBuyAmount,
+          price: limitPrice || marketPrice.toString(),
+          order_type: "limit" as const,
           expiry,
           status: "open" as const,
         };
@@ -399,10 +419,20 @@ export default function Home() {
   const handleEditOrder = (order: UserOrder) => {
     console.log('Editing order:', order);
     setEditingOrderId(order.id);
+    
+    // Set the correct tab based on order side
+    if (order.side === "buy") {
+      setOrderFormTab("long");
+      setBuyAmount(order.buyAmount); // ETH amount
+      setSellAmount(order.sellAmount); // USDC total
+    } else {
+      setOrderFormTab("short");
+      setSellAmount(order.sellAmount); // ETH amount
+      setBuyAmount(order.buyAmount); // USDC total
+    }
+    
     setSellToken(order.sellToken);
     setBuyToken(order.buyToken);
-    setSellAmount(order.sellAmount);
-    setBuyAmount(order.buyAmount);
     setLimitPrice(order.price);
     setOrderType(order.orderType);
     setExpiry(order.expiry);
@@ -695,10 +725,10 @@ export default function Home() {
               <div className="mb-6">
                 <div className="flex items-center justify-between mb-2">
                   <label className="text-sm text-zinc-400">
-                    Amount ({orderFormTab === "long" ? "ETH" : "ETH"})
+                    Amount (ETH)
                   </label>
                   <span className="text-xs text-zinc-500">
-                    Balance: {orderFormTab === "long" ? balances.USDC : balances.ETH}
+                    Balance: {balances.ETH}
                   </span>
                 </div>
                 <div className="relative">
@@ -706,15 +736,24 @@ export default function Home() {
                     type="number"
                     value={orderFormTab === "long" ? buyAmount : sellAmount}
                     onChange={(e) => {
+                      const ethAmount = e.target.value;
                       if (orderFormTab === "long") {
-                        setBuyAmount(e.target.value);
-                        if (limitPrice) {
-                          setSellAmount((parseFloat(e.target.value) * parseFloat(limitPrice)).toFixed(2));
+                        // Long: buying ETH
+                        setBuyAmount(ethAmount);
+                        if (limitPrice && ethAmount) {
+                          // Calculate USDC needed (ETH amount * price)
+                          setSellAmount((parseFloat(ethAmount) * parseFloat(limitPrice)).toFixed(2));
+                        } else {
+                          setSellAmount("");
                         }
                       } else {
-                        setSellAmount(e.target.value);
-                        if (limitPrice) {
-                          setBuyAmount((parseFloat(e.target.value) * parseFloat(limitPrice)).toFixed(2));
+                        // Short: selling ETH
+                        setSellAmount(ethAmount);
+                        if (limitPrice && ethAmount) {
+                          // Calculate USDC received (ETH amount * price)
+                          setBuyAmount((parseFloat(ethAmount) * parseFloat(limitPrice)).toFixed(2));
+                        } else {
+                          setBuyAmount("");
                         }
                       }
                     }}
@@ -723,7 +762,7 @@ export default function Home() {
                   />
                   <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
                     <Image 
-                      src={orderFormTab === "long" ? "/eth.png" : "/eth.png"} 
+                      src="/eth.png" 
                       alt="ETH" 
                       width={20} 
                       height={20} 
@@ -880,7 +919,10 @@ export default function Home() {
                               {order.sellToken}/{order.buyToken}
                             </td>
                             <td className="py-3">
-                              {order.sellAmount} {order.sellToken}
+                              {order.side === "buy" 
+                                ? `${order.buyAmount} ETH`
+                                : `${order.sellAmount} ETH`
+                              }
                             </td>
                             <td className="py-3">${parseFloat(order.price).toFixed(2)}</td>
                             <td className="py-3">
@@ -960,7 +1002,10 @@ export default function Home() {
                               {order.sellToken}/{order.buyToken}
                             </td>
                             <td className="py-3">
-                              {order.sellAmount} {order.sellToken}
+                              {order.side === "buy" 
+                                ? `${order.buyAmount} ETH`
+                                : `${order.sellAmount} ETH`
+                              }
                             </td>
                             <td className="py-3">${parseFloat(order.price).toFixed(2)}</td>
                             <td className="py-3">
