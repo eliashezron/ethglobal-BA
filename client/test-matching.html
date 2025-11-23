@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Order Matching Test</title>
+    <style>
+        body {
+            font-family: 'Monaco', monospace;
+            background: #1a1a1a;
+            color: #00ff00;
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 { color: #00ffff; }
+        .section {
+            background: #2a2a2a;
+            border: 1px solid #444;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        button {
+            background: #0066ff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+            font-size: 14px;
+        }
+        button:hover { background: #0055dd; }
+        button.success { background: #00aa00; }
+        button.danger { background: #aa0000; }
+        input, select {
+            background: #333;
+            color: #fff;
+            border: 1px solid #555;
+            padding: 8px;
+            border-radius: 4px;
+            margin: 5px;
+        }
+        .log {
+            background: #000;
+            border: 1px solid #333;
+            border-radius: 4px;
+            padding: 10px;
+            height: 300px;
+            overflow-y: auto;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+        .log-entry {
+            padding: 2px 0;
+            border-bottom: 1px solid #222;
+        }
+        .log-info { color: #00ffff; }
+        .log-success { color: #00ff00; }
+        .log-error { color: #ff0000; }
+        .log-warn { color: #ffaa00; }
+        .status { padding: 10px; border-radius: 4px; margin: 10px 0; }
+        .status.connected { background: #004400; border: 1px solid #00ff00; }
+        .status.disconnected { background: #440000; border: 1px solid #ff0000; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        th, td {
+            border: 1px solid #444;
+            padding: 8px;
+            text-align: left;
+        }
+        th { background: #333; color: #00ffff; }
+        .buy { color: #00ff88; }
+        .sell { color: #ff6666; }
+    </style>
+</head>
+<body>
+    <h1>🧪 Order Matching Test Suite</h1>
+    
+    <div class="section">
+        <h2>WebSocket Connection</h2>
+        <div id="wsStatus" class="status disconnected">Disconnected</div>
+        <button onclick="connectWS()">Connect</button>
+        <button onclick="disconnectWS()" class="danger">Disconnect</button>
+    </div>
+
+    <div class="section">
+        <h2>Create Test Orders</h2>
+        <div>
+            <label>Wallet Address:</label>
+            <input type="text" id="walletAddress" placeholder="0x..." value="0x1234567890123456789012345678901234567890" style="width: 400px;">
+        </div>
+        <div>
+            <label>Side:</label>
+            <select id="side">
+                <option value="buy">BUY</option>
+                <option value="sell">SELL</option>
+            </select>
+            <label>Price (USDC):</label>
+            <input type="number" id="price" placeholder="2809" value="2809" step="0.01">
+            <label>Amount (ETH):</label>
+            <input type="number" id="amount" placeholder="0.1" value="0.1" step="0.01">
+        </div>
+        <button onclick="createOrder()" class="success">Create Order</button>
+        <button onclick="createMatchingPair()">Create Matching Pair</button>
+        <button onclick="createTestScenario1()">Test: Exact Match</button>
+        <button onclick="createTestScenario2()">Test: Price Crossing</button>
+        <button onclick="createTestScenario3()">Test: Partial Fill</button>
+    </div>
+
+    <div class="section">
+        <h2>Active Orders</h2>
+        <table id="ordersTable">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Side</th>
+                    <th>Price</th>
+                    <th>Amount</th>
+                    <th>Maker</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody id="ordersBody">
+                <tr><td colspan="6" style="text-align: center; color: #666;">No orders yet</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="section">
+        <h2>Matches</h2>
+        <div id="matches" style="color: #ffaa00;">No matches yet</div>
+    </div>
+
+    <div class="section">
+        <h2>Event Log</h2>
+        <button onclick="clearLog()">Clear Log</button>
+        <div id="log" class="log"></div>
+    </div>
+
+    <script>
+        let ws = null;
+        const orders = new Map();
+        const matches = [];
+
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = `log-entry log-${type}`;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logDiv.insertBefore(entry, logDiv.firstChild);
+        }
+
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+        }
+
+        function updateStatus(connected) {
+            const status = document.getElementById('wsStatus');
+            status.className = `status ${connected ? 'connected' : 'disconnected'}`;
+            status.textContent = connected ? '✅ Connected to ws://localhost:8080' : '❌ Disconnected';
+        }
+
+        function connectWS() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                log('Already connected', 'warn');
+                return;
+            }
+
+            log('Connecting to WebSocket server...', 'info');
+            ws = new WebSocket('ws://localhost:8080');
+
+            ws.onopen = () => {
+                log('WebSocket connected!', 'success');
+                updateStatus(true);
+                
+                // Send auth
+                const wallet = document.getElementById('walletAddress').value;
+                ws.send(JSON.stringify({
+                    type: 'auth',
+                    data: { address: wallet }
+                }));
+            };
+
+            ws.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+                log(`Received: ${message.type}`, 'info');
+                
+                if (message.type === 'order.created') {
+                    orders.set(message.data.id, message.data);
+                    updateOrdersTable();
+                }
+                
+                if (message.type === 'trade.matched') {
+                    log(`🎉 MATCH FOUND! ${message.data.tradeId}`, 'success');
+                    matches.push(message.data);
+                    updateMatches();
+                }
+                
+                console.log('Message:', message);
+            };
+
+            ws.onerror = (error) => {
+                log('WebSocket error', 'error');
+                console.error(error);
+            };
+
+            ws.onclose = () => {
+                log('WebSocket closed', 'warn');
+                updateStatus(false);
+            };
+        }
+
+        function disconnectWS() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+
+        function createOrder() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                log('Not connected to WebSocket', 'error');
+                return;
+            }
+
+            const wallet = document.getElementById('walletAddress').value;
+            const side = document.getElementById('side').value;
+            const price = parseFloat(document.getElementById('price').value);
+            const amount = parseFloat(document.getElementById('amount').value);
+
+            const priceInWei = Math.floor(price * 1e18);
+            const sizeInWei = Math.floor(amount * 1e18);
+
+            const order = {
+                id: `test-${Date.now()}`,
+                maker: wallet,
+                baseToken: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", // ETH
+                quoteToken: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // USDC
+                side: side,
+                price: priceInWei.toFixed(0),
+                size: sizeInWei.toFixed(0),
+                minFill: sizeInWei.toFixed(0),
+                expiry: Math.floor(Date.now() / 1000) + 3600,
+                channelId: "0x0000000000000000000000000000000000000000000000000000000000000000",
+                nonce: Date.now().toString(),
+                signature: "0x0000000000000000000000000000000000000000000000000000000000000000"
+            };
+
+            log(`Creating ${side.toUpperCase()} order: ${amount} ETH @ $${price}`, 'info');
+            ws.send(JSON.stringify({
+                type: 'order.create',
+                data: order
+            }));
+        }
+
+        function createMatchingPair() {
+            // Create a sell order
+            document.getElementById('side').value = 'sell';
+            document.getElementById('price').value = '2809';
+            document.getElementById('amount').value = '0.1';
+            createOrder();
+
+            // Wait a bit then create matching buy order
+            setTimeout(() => {
+                document.getElementById('side').value = 'buy';
+                document.getElementById('walletAddress').value = '0x9876543210987654321098765432109876543210';
+                createOrder();
+                document.getElementById('walletAddress').value = '0x1234567890123456789012345678901234567890';
+            }, 500);
+        }
+
+        function createTestScenario1() {
+            log('=== Test Scenario 1: Exact Price Match ===', 'info');
+            // Sell at 2800
+            document.getElementById('side').value = 'sell';
+            document.getElementById('price').value = '2800';
+            document.getElementById('amount').value = '0.5';
+            createOrder();
+
+            setTimeout(() => {
+                // Buy at 2800
+                document.getElementById('side').value = 'buy';
+                document.getElementById('price').value = '2800';
+                document.getElementById('walletAddress').value = '0xbuyer123000000000000000000000000000000';
+                createOrder();
+                document.getElementById('walletAddress').value = '0x1234567890123456789012345678901234567890';
+            }, 500);
+        }
+
+        function createTestScenario2() {
+            log('=== Test Scenario 2: Price Crossing (Buy higher than Sell) ===', 'info');
+            // Sell at 2750
+            document.getElementById('side').value = 'sell';
+            document.getElementById('price').value = '2750';
+            document.getElementById('amount').value = '0.3';
+            createOrder();
+
+            setTimeout(() => {
+                // Buy at 2850 (willing to pay more)
+                document.getElementById('side').value = 'buy';
+                document.getElementById('price').value = '2850';
+                document.getElementById('walletAddress').value = '0xbuyer456000000000000000000000000000000';
+                createOrder();
+                document.getElementById('walletAddress').value = '0x1234567890123456789012345678901234567890';
+            }, 500);
+        }
+
+        function createTestScenario3() {
+            log('=== Test Scenario 3: Partial Fill ===', 'info');
+            // Large sell order
+            document.getElementById('side').value = 'sell';
+            document.getElementById('price').value = '2800';
+            document.getElementById('amount').value = '5.0';
+            createOrder();
+
+            setTimeout(() => {
+                // Small buy order (partial fill)
+                document.getElementById('side').value = 'buy';
+                document.getElementById('price').value = '2800';
+                document.getElementById('amount').value = '1.0';
+                document.getElementById('walletAddress').value = '0xbuyer789000000000000000000000000000000';
+                createOrder();
+                document.getElementById('walletAddress').value = '0x1234567890123456789012345678901234567890';
+            }, 500);
+        }
+
+        function updateOrdersTable() {
+            const tbody = document.getElementById('ordersBody');
+            if (orders.size === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #666;">No orders yet</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = Array.from(orders.values()).map(order => `
+                <tr>
+                    <td>${order.id.substring(0, 15)}...</td>
+                    <td class="${order.side}">${order.side.toUpperCase()}</td>
+                    <td>${(parseInt(order.price) / 1e18).toFixed(2)}</td>
+                    <td>${(parseInt(order.size) / 1e18).toFixed(4)} ETH</td>
+                    <td>${order.maker.substring(0, 10)}...</td>
+                    <td>${order.status || 'open'}</td>
+                </tr>
+            `).join('');
+        }
+
+        function updateMatches() {
+            const div = document.getElementById('matches');
+            if (matches.length === 0) {
+                div.innerHTML = '<span style="color: #666;">No matches yet</span>';
+                return;
+            }
+
+            div.innerHTML = matches.map((match, i) => `
+                <div style="background: #1a3a1a; padding: 10px; margin: 5px 0; border-radius: 4px; border: 1px solid #00ff00;">
+                    <strong>Match ${i + 1}:</strong> ${match.tradeId}<br>
+                    Maker: ${match.makerAddress.substring(0, 15)}... (Order: ${match.makerOrderId.substring(0, 15)}...)<br>
+                    Taker: ${match.takerAddress.substring(0, 15)}... (Order: ${match.takerOrderId.substring(0, 15)}...)<br>
+                    Amount: ${(parseInt(match.fillQuantity) / 1e18).toFixed(4)} ETH @ $${(parseInt(match.price) / 1e18).toFixed(2)}
+                </div>
+            `).join('');
+        }
+
+        // Auto-connect on load
+        window.onload = () => {
+            log('Test suite loaded. Click "Connect" to start.', 'info');
+        };
+    </script>
+</body>
+</html>

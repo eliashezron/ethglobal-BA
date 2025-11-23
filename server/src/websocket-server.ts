@@ -1,5 +1,12 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer } from 'http';
+import { OrderBook } from './orderbook/OrderBook';
+import { OrderMatcher } from './orderbook/OrderMatcher';
+import { NitroliteClient, EventBus } from './nitrolite';
+import { loadEnv } from './config/env';
+import type { OrderRecord } from '@shared/types/order';
+import { createClient } from '@supabase/supabase-js';
+import type { ChannelInfo } from './nitrolite/client';
 
 interface ClientConnection {
   ws: WebSocket;
@@ -10,7 +17,106 @@ interface ClientConnection {
 const PORT = process.env.WS_PORT || 8080;
 const clients = new Map<string, ClientConnection>();
 
+// Global instances
+let orderBook: OrderBook;
+let orderMatcher: OrderMatcher;
+let nitroliteClient: NitroliteClient;
+let supabase: ReturnType<typeof createClient>;
+let availableChannels: ChannelInfo[] = [];
+
 export async function startWebSocketServer() {
+  // Initialize Supabase client
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+  
+  if (!supabaseUrl || !supabaseKey) {
+    console.warn('⚠️  Supabase credentials not found, order persistence disabled');
+  } else {
+    supabase = createClient(supabaseUrl, supabaseKey);
+    console.log('✅ Supabase connected');
+  }
+
+  // Initialize Nitrolite client
+  const env = loadEnv();
+  const events = new EventBus();
+  nitroliteClient = new NitroliteClient(env.yellow, events);
+  
+  console.log('🔗 Connecting to Nitrolite...');
+  await nitroliteClient.connect();
+  console.log('✅ Nitrolite connected');
+
+  // Fetch available channels
+  console.log('📡 Fetching channels...');
+  events.on('nitrolite.channels.received', (data: any) => {
+    if (data.channels && Array.isArray(data.channels)) {
+      availableChannels = data.channels;
+      console.log(`✅ Loaded ${availableChannels.length} channels`);
+      if (availableChannels.length > 0) {
+        console.log('📋 First channel:', availableChannels[0].channelId);
+      }
+    }
+  });
+  
+  try {
+    await nitroliteClient.requestChannels();
+    // Give it a moment to receive the response
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  } catch (error) {
+    console.warn('⚠️  Could not fetch channels, will use placeholder');
+  }
+
+  // Initialize OrderBook and Matcher
+  orderBook = new OrderBook();
+  orderMatcher = new OrderMatcher(orderBook, nitroliteClient);
+
+  // Listen for match events
+  orderMatcher.on('match', async (match) => {
+    console.log(`💱 Match created: ${match.tradeId}`);
+    
+    // Update order statuses in Supabase
+    if (supabase) {
+      try {
+        // Update maker order
+        await supabase
+          .from('orders')
+          .update({ 
+            status: 'filled',
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', match.makerOrderId);
+        
+        // Update taker order
+        await supabase
+          .from('orders')
+          .update({ 
+            status: 'filled',
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', match.takerOrderId);
+        
+        console.log('✅ Order statuses updated in database');
+      } catch (error) {
+        console.error('❌ Failed to update order statuses:', error);
+      }
+    }
+    
+    // Broadcast match to all clients
+    broadcast({
+      type: 'trade.matched',
+      data: {
+        tradeId: match.tradeId,
+        makerOrderId: match.makerOrderId,
+        takerOrderId: match.takerOrderId,
+        makerAddress: match.makerAddress,
+        takerAddress: match.takerAddress,
+        fillQuantity: match.fillQuantity.toString(),
+        price: match.price.toString(),
+        sessionData: match.sessionData,
+      },
+      timestamp: match.timestamp,
+    });
+  });
+
   // Create HTTP server
   const server = createServer();
   
@@ -126,6 +232,20 @@ export async function startWebSocketServer() {
   return { server, wss };
 }
 
+// Helper function to get a channel ID
+function getChannelId(): string {
+  if (availableChannels.length > 0) {
+    // Use the first available channel
+    const channelId = availableChannels[0].channelId;
+    console.log(`📡 Using channel: ${channelId}`);
+    return channelId;
+  }
+  
+  // Fallback to zero channel if none available
+  console.warn('⚠️  No channels available, using placeholder');
+  return '0x0000000000000000000000000000000000000000000000000000000000000000';
+}
+
 // Handler functions
 async function handleAuth(ws: WebSocket, clientId: string, message: any) {
   try {
@@ -161,6 +281,43 @@ async function handleOrderCreate(ws: WebSocket, clientId: string, message: any) 
     }
 
     console.log(`📝 Creating order for ${client.address}`);
+    console.log('📦 Order data:', message.data);
+
+    const orderData = message.data;
+    
+    // Helper to safely convert to BigInt (handle scientific notation)
+    const toBigInt = (value: any): bigint => {
+      const str = String(value);
+      // Remove any scientific notation or decimals
+      const num = Math.floor(parseFloat(str));
+      return BigInt(num);
+    };
+    
+    // Get a real channel ID (replace 0x0 with actual channel)
+    const channelId = getChannelId();
+    
+    // Convert numeric strings to BigInt
+    const order: OrderRecord = {
+      ...orderData,
+      channelId, // Use real channel ID
+      price: toBigInt(orderData.price),
+      size: toBigInt(orderData.size),
+      minFill: toBigInt(orderData.minFill || orderData.size),
+      remaining: toBigInt(orderData.size),
+      status: 'open',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    
+    console.log('✅ Order converted:', {
+      id: order.id,
+      side: order.side,
+      price: order.price.toString(),
+      size: order.size.toString(),
+    });
+
+    // Add order to orderbook
+    orderBook.createOrder(order);
 
     // Broadcast to all clients
     broadcast({
@@ -174,7 +331,19 @@ async function handleOrderCreate(ws: WebSocket, clientId: string, message: any) 
       data: message.data,
       timestamp: Date.now()
     }));
+
+    // Attempt to match the order
+    console.log('🔍 Checking for matches...');
+    const matches = await orderMatcher.onNewOrder(order);
+    
+    if (matches.length > 0) {
+      console.log(`✅ Created ${matches.length} matches`);
+    } else {
+      console.log('📋 Order added to book, awaiting match');
+    }
+
   } catch (error) {
+    console.error('❌ Order creation error:', error);
     ws.send(JSON.stringify({
       type: 'order.create.error',
       message: error instanceof Error ? error.message : 'Order creation failed',

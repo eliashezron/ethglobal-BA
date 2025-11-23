@@ -5,6 +5,12 @@ import Image from "next/image";
 import { orderService } from "../lib/supabase";
 import { WebSocketClient } from "../lib/websocket";
 
+// Token address constants (Base mainnet)
+const TOKEN_ADDRESSES = {
+  ETH: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", // Native ETH
+  USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // USDC on Base
+};
+
 type Token = "ETH" | "USDC";
 type OrderSide = "buy" | "sell";
 
@@ -26,7 +32,8 @@ interface UserOrder {
   price: string;
   orderType: "market" | "limit";
   expiry: string;
-  status: "open" | "filled" | "cancelled";
+  status: "open" | "filled" | "cancelled" | "partially_filled";
+  fillStatus?: "unfilled" | "partially_filled" | "filled";
   timestamp: number;
 }
 
@@ -64,6 +71,11 @@ export default function Home() {
   const [priceChangePercent, setPriceChangePercent] = useState(0);
   const [priceDirection, setPriceDirection] = useState<'up' | 'down' | null>(null);
   const prevPrice = useRef(2819.02);
+
+  // Trade matches and sessions
+  const [tradeMatches, setTradeMatches] = useState<any[]>([]);
+  const [selectedMatch, setSelectedMatch] = useState<any | null>(null);
+  const [showSessionModal, setShowSessionModal] = useState(false);
 
   // Real balances from Base mainnet
   const [balances, setBalances] = useState({
@@ -153,7 +165,7 @@ export default function Home() {
       if (editingOrderId) {
         // Update existing order in Supabase
         const updatePayload = {
-          side,
+          side: orderFormTab === "long" ? "buy" as const : "sell" as const,
           sell_token: finalSellToken,
           buy_token: finalBuyToken,
           sell_amount: orderFormTab === "long" ? finalSellAmount : sellAmount,
@@ -170,6 +182,17 @@ export default function Home() {
         
         console.log('Order updated successfully:', updatedOrder);
         
+        // Send update to WebSocket server
+        if (wsClient.current?.isConnected) {
+          wsClient.current.send({
+            type: 'order.update',
+            data: {
+              id: editingOrderId,
+              ...updatePayload,
+            },
+          });
+        }
+        
         // Fetch fresh data from Supabase
         await loadOrders(walletAddress);
         
@@ -183,7 +206,7 @@ export default function Home() {
         const newOrder = {
           id: orderId,
           wallet_address: walletAddress,
-          side,
+          side: orderFormTab === "long" ? "buy" as const : "sell" as const,
           sell_token: finalSellToken,
           buy_token: finalBuyToken,
           sell_amount: orderFormTab === "long" ? finalSellAmount : sellAmount,
@@ -197,6 +220,42 @@ export default function Home() {
         const createdOrder = await orderService.createOrder(newOrder);
         
         console.log('Order created successfully:', createdOrder);
+        
+        // Send order to WebSocket server for matching
+        if (wsClient.current?.isConnected) {
+          console.log('📤 Sending order to server for matching...');
+          
+          // Convert order to server format with proper BigInt strings
+          const priceInWei = Math.floor(parseFloat(limitPrice || marketPrice.toString()) * 1e18);
+          const sizeInWei = Math.floor(parseFloat(orderFormTab === "long" ? buyAmount : sellAmount) * 1e18);
+          
+          // IMPORTANT: Both buy and sell orders must use the same token pair
+          // baseToken = ETH (what we're trading)
+          // quoteToken = USDC (what we're pricing in)
+          const serverOrder = {
+            id: orderId,
+            maker: walletAddress,
+            baseToken: TOKEN_ADDRESSES.ETH, // Always ETH as base
+            quoteToken: TOKEN_ADDRESSES.USDC, // Always USDC as quote
+            side: orderFormTab === "long" ? "buy" : "sell",
+            price: priceInWei.toFixed(0), // No decimals, no scientific notation
+            size: sizeInWei.toFixed(0),
+            minFill: Math.floor(sizeInWei * 0.1).toFixed(0), // Allow partial fills (10% minimum)
+            expiry: Math.floor(Date.now() / 1000) + 3600, // 1 hour from now
+            channelId: "0x0000000000000000000000000000000000000000000000000000000000000000", // Will be replaced by server with real channel
+            nonce: Date.now().toString(),
+            signature: "0x0000000000000000000000000000000000000000000000000000000000000000",
+          };
+          
+          console.log('📤 Sending order to server:', serverOrder);
+          
+          wsClient.current.send({
+            type: 'order.create',
+            data: serverOrder,
+          });
+        } else {
+          console.warn('⚠️ WebSocket not connected, order not sent for matching');
+        }
         
         // Fetch fresh data from Supabase
         await loadOrders(walletAddress);
@@ -383,11 +442,44 @@ export default function Home() {
         // Reload order book to show updated orders
         loadOrderBook();
       }
+      
+      // Handle trade matches
+      if (message.type === 'trade.matched') {
+        console.log('🎉 Trade matched!', message.data);
+        setTradeMatches(prev => [message.data, ...prev]);
+        
+        // Update local order status
+        setUserOrders(prevOrders => prevOrders.map(order => {
+          // Check if this order was involved in the match
+          if (order.id === message.data.makerOrderId || order.id === message.data.takerOrderId) {
+            // Determine if fully filled or partially filled based on remaining amount
+            // For now, mark as filled (we'll enhance this later with remaining amounts)
+            return {
+              ...order,
+              status: 'filled',
+              fillStatus: 'filled'
+            };
+          }
+          return order;
+        }));
+        
+        // Show notification for user's orders
+        if (walletAddress && (message.data.makerAddress === walletAddress || message.data.takerAddress === walletAddress)) {
+          setSelectedMatch(message.data);
+          setShowSessionModal(true);
+          
+          // Reload orders to show updated status from server
+          setTimeout(() => {
+            loadOrders(walletAddress);
+            loadOrderBook();
+          }, 1000);
+        }
+      }
     });
 
-    // Listen to errors
+    // Listen to errors (suppress to avoid console spam when server is down)
     ws.onError((error) => {
-      console.error('WebSocket error:', error);
+      console.warn('WebSocket connection issue (server may not be running)');
     });
 
     return () => {
@@ -926,7 +1018,7 @@ export default function Home() {
                   : "text-zinc-400 hover:text-zinc-300"
               }`}
             >
-              Open Positions ({userOrders.filter(o => o.status === "open").length})
+              Open Positions ({userOrders.filter(o => o.status === "open" || o.status === "partially_filled").length})
               {positionsTab === "open" && (
                 <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white"></div>
               )}
@@ -939,7 +1031,7 @@ export default function Home() {
                   : "text-zinc-400 hover:text-zinc-300"
               }`}
             >
-              Position History ({userOrders.filter(o => o.status !== "open").length})
+              Position History ({userOrders.filter(o => o.status === "filled" || o.status === "cancelled").length})
               {positionsTab === "history" && (
                 <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white"></div>
               )}
@@ -949,8 +1041,8 @@ export default function Home() {
           {/* Tab Content */}
           <div className="p-6">
             {positionsTab === "open" ? (
-              // Open Positions
-              userOrders.filter(o => o.status === "open").length > 0 ? (
+              // Open Positions (including partially filled)
+              userOrders.filter(o => o.status === "open" || o.status === "partially_filled").length > 0 ? (
                 <div className="overflow-x-auto">
                   <table className="w-full">
                     <thead>
@@ -961,13 +1053,14 @@ export default function Home() {
                         <th className="pb-3">Amount</th>
                         <th className="pb-3">Price</th>
                         <th className="pb-3">Status</th>
+                        <th className="pb-3">Fulfillment</th>
                         <th className="pb-3">Expiry</th>
                         <th className="pb-3">Actions</th>
                       </tr>
                     </thead>
                     <tbody>
                       {userOrders
-                        .filter(o => o.status === "open")
+                        .filter(o => o.status === "open" || o.status === "partially_filled")
                         .map((order) => (
                           <tr
                             key={order.id}
@@ -1004,6 +1097,23 @@ export default function Home() {
                                 {order.status}
                               </span>
                             </td>
+                            <td className="py-3">
+                              <span
+                                className={`px-2 py-1 rounded text-xs font-medium ${
+                                  order.fillStatus === "filled" || order.status === "filled"
+                                    ? "bg-green-900 text-green-300"
+                                    : order.fillStatus === "partially_filled" || order.status === "partially_filled"
+                                    ? "bg-orange-900 text-orange-300"
+                                    : "bg-zinc-800 text-zinc-400"
+                                }`}
+                              >
+                                {order.fillStatus === "filled" || order.status === "filled" 
+                                  ? "Full"
+                                  : order.fillStatus === "partially_filled" || order.status === "partially_filled"
+                                  ? "Partial"
+                                  : "Unfilled"}
+                              </span>
+                            </td>
                             <td className="py-3">{order.expiry}</td>
                             <td className="py-3">
                               <div className="flex gap-2">
@@ -1033,8 +1143,8 @@ export default function Home() {
                 </div>
               )
             ) : (
-              // Position History
-              userOrders.filter(o => o.status !== "open").length > 0 ? (
+              // Position History (filled and cancelled)
+              userOrders.filter(o => o.status === "filled" || o.status === "cancelled").length > 0 ? (
                 <div className="overflow-x-auto">
                   <table className="w-full">
                     <thead>
@@ -1107,6 +1217,119 @@ export default function Home() {
           </div>
         </div>
       </div>
+
+      {/* Session Modal */}
+      {showSessionModal && selectedMatch && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-zinc-900 rounded-lg max-w-2xl w-full max-h-[90vh] overflow-auto">
+            <div className="sticky top-0 bg-zinc-900 border-b border-zinc-800 px-6 py-4 flex justify-between items-center">
+              <h2 className="text-2xl font-bold text-green-400">🎉 Trade Matched!</h2>
+              <button
+                onClick={() => setShowSessionModal(false)}
+                className="text-zinc-400 hover:text-white text-2xl"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="p-6 space-y-6">
+              {/* Match Summary */}
+              <div className="bg-zinc-800 rounded-lg p-4">
+                <h3 className="text-lg font-semibold mb-4">Trade Summary</h3>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-sm text-zinc-400">Trade ID</p>
+                    <p className="font-mono text-xs">{selectedMatch.tradeId}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-zinc-400">Fill Quantity</p>
+                    <p className="font-semibold">{parseFloat(selectedMatch.fillQuantity) / 1e18} ETH</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-zinc-400">Price</p>
+                    <p className="font-semibold">${parseFloat(selectedMatch.price) / 1e18}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-zinc-400">Total Value</p>
+                    <p className="font-semibold">
+                      ${((parseFloat(selectedMatch.fillQuantity) * parseFloat(selectedMatch.price)) / 1e36).toFixed(2)}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Participants */}
+              <div className="bg-zinc-800 rounded-lg p-4">
+                <h3 className="text-lg font-semibold mb-4">Participants</h3>
+                <div className="space-y-3">
+                  <div>
+                    <p className="text-sm text-zinc-400">Maker (Order Creator)</p>
+                    <p className="font-mono text-xs">{selectedMatch.makerAddress}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-zinc-400">Taker (Order Filler)</p>
+                    <p className="font-mono text-xs">{selectedMatch.takerAddress}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Session Details */}
+              {selectedMatch.sessionData && (
+                <div className="bg-zinc-800 rounded-lg p-4">
+                  <h3 className="text-lg font-semibold mb-4">Nitrolite Session Created</h3>
+                  <div className="space-y-3">
+                    <div>
+                      <p className="text-sm text-zinc-400">Session Type</p>
+                      <p className="font-semibold">P2P Trade Settlement</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-zinc-400">Status</p>
+                      <p className="text-green-400 font-semibold">✓ Session Created - Awaiting Signatures</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-zinc-400">Protocol</p>
+                      <p className="font-mono text-xs">NitroRPC/0.4</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Orders Involved */}
+              <div className="bg-zinc-800 rounded-lg p-4">
+                <h3 className="text-lg font-semibold mb-4">Orders</h3>
+                <div className="space-y-2">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-zinc-400">Maker Order:</span>
+                    <span className="font-mono text-xs">{selectedMatch.makerOrderId}</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-zinc-400">Taker Order:</span>
+                    <span className="font-mono text-xs">{selectedMatch.takerOrderId}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Next Steps */}
+              <div className="bg-blue-900/30 border border-blue-800 rounded-lg p-4">
+                <h3 className="text-lg font-semibold mb-2 text-blue-400">Next Steps</h3>
+                <ol className="list-decimal list-inside space-y-2 text-sm">
+                  <li>Both parties will be notified to sign the session</li>
+                  <li>Once signed, funds will be allocated in the state channel</li>
+                  <li>Trade will execute automatically on-chain</li>
+                  <li>Your balances will be updated</li>
+                </ol>
+              </div>
+
+              <button
+                onClick={() => setShowSessionModal(false)}
+                className="w-full bg-green-600 hover:bg-green-700 text-white py-3 rounded-lg font-semibold transition-colors"
+              >
+                Got it!
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

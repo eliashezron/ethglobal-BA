@@ -86,9 +86,10 @@ export class WebSocketClient {
         };
 
         this.ws.onerror = (event) => {
-          const error = new Error("WebSocket error");
-          console.error("❌ WebSocket error:", error);
-          this.errorListeners.forEach(listener => listener(error));
+          const error = new Error("WebSocket connection failed");
+          console.warn("⚠️ WebSocket error (server may not be running)");
+          // Don't propagate error to listeners to avoid console spam
+          // this.errorListeners.forEach(listener => listener(error));
         };
 
         this.ws.onclose = (event) => {
