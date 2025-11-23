@@ -7,6 +7,8 @@ import { loadEnv } from './config/env';
 import type { OrderRecord } from '@shared/types/order';
 import { createClient } from '@supabase/supabase-js';
 import type { ChannelInfo } from './nitrolite/client';
+import { getPendingSession, setPendingSession } from './nitrolite/session-storage';
+import { createAppSessionMessage } from '@erc7824/nitrolite';
 
 interface ClientConnection {
   ws: WebSocket;
@@ -182,6 +184,10 @@ export async function startWebSocketServer() {
           
           case 'orderbook.subscribe':
             await handleOrderbookSubscribe(ws, clientId, message);
+            break;
+          
+          case 'session.sign':
+            await handleSessionSign(ws, clientId, message);
             break;
           
           case 'ping':
@@ -419,6 +425,134 @@ async function handleOrderbookSubscribe(ws: WebSocket, clientId: string, message
     type: 'orderbook.subscribed',
     timestamp: Date.now()
   }));
+}
+
+async function handleSessionSign(ws: WebSocket, clientId: string, message: any) {
+  try {
+    const client = clients.get(clientId);
+    if (!client?.address) {
+      throw new Error('Not authenticated');
+    }
+
+    const { tradeId, signature, signerAddress } = message.data;
+    
+    if (!tradeId || !signature || !signerAddress) {
+      throw new Error('Missing required fields: tradeId, signature, signerAddress');
+    }
+
+    console.log(`✍️  Received signature for trade ${tradeId} from ${signerAddress}`);
+
+    // Get pending session
+    const pendingSession = getPendingSession(tradeId);
+    if (!pendingSession) {
+      throw new Error(`No pending session found for trade ${tradeId}`);
+    }
+
+    // Store the signature
+    pendingSession.signatures.set(signerAddress.toLowerCase() as `0x${string}`, signature);
+    setPendingSession(tradeId, pendingSession);
+
+    console.log(`📝 Signature stored (${pendingSession.signatures.size}/2 signatures collected)`);
+
+    // Check if we have all signatures (maker + taker)
+    const makerSigned = pendingSession.signatures.has(pendingSession.makerAddress.toLowerCase() as `0x${string}`);
+    const takerSigned = pendingSession.signatures.has(pendingSession.takerAddress.toLowerCase() as `0x${string}`);
+
+    ws.send(JSON.stringify({
+      type: 'session.sign.success',
+      data: {
+        tradeId,
+        signaturesCollected: pendingSession.signatures.size,
+        signaturesRequired: 2,
+        makerSigned,
+        takerSigned,
+      },
+      timestamp: Date.now()
+    }));
+
+    // If all signatures collected, submit to ClearNode
+    if (makerSigned && takerSigned) {
+      console.log(`🎉 All signatures collected for trade ${tradeId}, submitting to ClearNode...`);
+      
+      try {
+        await submitSessionToClearNode(pendingSession);
+        
+        // Notify all clients
+        broadcast({
+          type: 'session.submitted',
+          data: {
+            tradeId,
+            status: 'submitted',
+            message: 'Session submitted to ClearNode for execution'
+          },
+          timestamp: Date.now()
+        });
+
+        console.log(`✅ Session ${tradeId} submitted to ClearNode successfully`);
+      } catch (error) {
+        console.error(`❌ Failed to submit session to ClearNode:`, error);
+        
+        broadcast({
+          type: 'session.error',
+          data: {
+            tradeId,
+            error: error instanceof Error ? error.message : 'Failed to submit session'
+          },
+          timestamp: Date.now()
+        });
+      }
+    }
+
+  } catch (error) {
+    console.error('❌ Session sign error:', error);
+    ws.send(JSON.stringify({
+      type: 'session.sign.error',
+      message: error instanceof Error ? error.message : 'Session signing failed',
+      timestamp: Date.now()
+    }));
+  }
+}
+
+async function submitSessionToClearNode(pendingSession: any) {
+  try {
+    // Reconstruct the full signed message with all signatures
+    const signatures = [
+      pendingSession.serverSignature, // Server signature (already added)
+      pendingSession.signatures.get(pendingSession.makerAddress.toLowerCase() as `0x${string}`),
+      pendingSession.signatures.get(pendingSession.takerAddress.toLowerCase() as `0x${string}`),
+    ];
+
+    const signedMessage = {
+      req: pendingSession.requestToSign,
+      sig: signatures,
+    };
+
+    console.log('📤 Submitting session to ClearNode:', {
+      tradeId: pendingSession.tradeId,
+      participants: [
+        pendingSession.makerAddress,
+        pendingSession.takerAddress,
+        pendingSession.serverAddress
+      ],
+      signatures: signatures.length
+    });
+
+    // Send to ClearNode via WebSocket
+    const messageStr = JSON.stringify(signedMessage);
+    
+    // Use the nitroliteClient's WebSocket to send
+    if (nitroliteClient && nitroliteClient.isConnected) {
+      // Access the internal socket (we may need to expose a send method in NitroliteClient)
+      (nitroliteClient as any).socket?.send(messageStr);
+      console.log('✅ Session message sent to ClearNode');
+    } else {
+      throw new Error('Nitrolite client not connected');
+    }
+
+  } catch (error) {
+    console.error('❌ Error submitting session to ClearNode:', error);
+    throw error;
+  }
 }
 
 // Broadcast to all connected clients except sender

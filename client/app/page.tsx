@@ -72,10 +72,14 @@ export default function Home() {
   const [priceDirection, setPriceDirection] = useState<'up' | 'down' | null>(null);
   const prevPrice = useRef(2819.02);
 
-  // Trade matches and sessions
   const [tradeMatches, setTradeMatches] = useState<any[]>([]);
   const [selectedMatch, setSelectedMatch] = useState<any | null>(null);
   const [showSessionModal, setShowSessionModal] = useState(false);
+  const [isSigning, setIsSigning] = useState(false);
+  const [signatureStatus, setSignatureStatus] = useState<{
+    signed: boolean;
+    message?: string;
+  } | null>(null);
 
   // Real balances from Base mainnet
   const [balances, setBalances] = useState({
@@ -310,6 +314,79 @@ export default function Home() {
     localStorage.removeItem('walletAddress');
   };
 
+  const autoSignSession = async (matchData: any) => {
+    if (!walletAddress || !matchData || !window.ethereum) {
+      console.error("Cannot auto-sign: wallet not connected or session data missing");
+      return;
+    }
+
+    setIsSigning(true);
+    setSignatureStatus({
+      signed: false,
+      message: "Signing session automatically..."
+    });
+
+    try {
+      // Get the request data that needs to be signed
+      const requestToSign = matchData.sessionData?.requestToSign;
+      if (!requestToSign) {
+        throw new Error("No session data to sign");
+      }
+
+      console.log("📝 Auto-signing session data:", requestToSign);
+
+      // Convert the request array to a JSON string for signing
+      const message = JSON.stringify(requestToSign);
+      
+      // Hash with keccak256 (matching server-side)
+      const encoder = new TextEncoder();
+      const data = encoder.encode(message);
+      const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const messageHash = '0x' + hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+      console.log("📝 Message hash:", messageHash);
+
+      // Request signature from MetaMask
+      const signature = await window.ethereum.request({
+        method: 'personal_sign',
+        params: [messageHash, walletAddress],
+      });
+
+      console.log("✍️ Signature obtained:", signature);
+
+      // Send signature to server
+      if (wsClient.current?.isConnected) {
+        wsClient.current.send({
+          type: 'session.sign',
+          data: {
+            tradeId: matchData.tradeId,
+            signature,
+            signerAddress: walletAddress,
+          },
+        });
+
+        setSignatureStatus({
+          signed: true,
+          message: "✓ Signature sent! Waiting for other party..."
+        });
+        
+        console.log("✅ Session signed automatically");
+      } else {
+        throw new Error("WebSocket not connected");
+      }
+
+    } catch (error: any) {
+      console.error("❌ Error auto-signing session:", error);
+      setSignatureStatus({
+        signed: false,
+        message: error.message || "Failed to sign session"
+      });
+    } finally {
+      setIsSigning(false);
+    }
+  };
+
   // Fetch real balances from Base mainnet
   const fetchBalances = async (address: string) => {
     try {
@@ -446,6 +523,7 @@ export default function Home() {
       // Handle trade matches
       if (message.type === 'trade.matched') {
         console.log('🎉 Trade matched!', message.data);
+        console.log('📋 Session data present:', !!message.data.sessionData);
         setTradeMatches(prev => [message.data, ...prev]);
         
         // Update local order status
@@ -465,8 +543,15 @@ export default function Home() {
         
         // Show notification for user's orders
         if (walletAddress && (message.data.makerAddress === walletAddress || message.data.takerAddress === walletAddress)) {
+          console.log('💼 Opening session modal for user');
           setSelectedMatch(message.data);
           setShowSessionModal(true);
+          setSignatureStatus(null); // Reset signature status
+          
+          // Automatically sign the session
+          setTimeout(() => {
+            autoSignSession(message.data);
+          }, 500);
           
           // Reload orders to show updated status from server
           setTimeout(() => {
@@ -1274,25 +1359,29 @@ export default function Home() {
               </div>
 
               {/* Session Details */}
-              {selectedMatch.sessionData && (
-                <div className="bg-zinc-800 rounded-lg p-4">
-                  <h3 className="text-lg font-semibold mb-4">Nitrolite Session Created</h3>
-                  <div className="space-y-3">
-                    <div>
-                      <p className="text-sm text-zinc-400">Session Type</p>
-                      <p className="font-semibold">P2P Trade Settlement</p>
-                    </div>
-                    <div>
-                      <p className="text-sm text-zinc-400">Status</p>
-                      <p className="text-green-400 font-semibold">✓ Session Created - Awaiting Signatures</p>
-                    </div>
-                    <div>
-                      <p className="text-sm text-zinc-400">Protocol</p>
-                      <p className="font-mono text-xs">NitroRPC/0.4</p>
-                    </div>
+              <div className="bg-zinc-800 rounded-lg p-4">
+                <h3 className="text-lg font-semibold mb-4">Nitrolite Session</h3>
+                <div className="space-y-3">
+                  <div>
+                    <p className="text-sm text-zinc-400">Session Type</p>
+                    <p className="font-semibold">P2P Trade Settlement</p>
                   </div>
+                  <div>
+                    <p className="text-sm text-zinc-400">Status</p>
+                    <p className="text-yellow-400 font-semibold">⏳ Awaiting Signatures</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-zinc-400">Protocol</p>
+                    <p className="font-mono text-xs">NitroRPC/0.4</p>
+                  </div>
+                  {selectedMatch.sessionData && (
+                    <div>
+                      <p className="text-sm text-zinc-400">Session Data</p>
+                      <p className="text-green-400 font-semibold text-xs">✓ Ready to sign</p>
+                    </div>
+                  )}
                 </div>
-              )}
+              </div>
 
               {/* Orders Involved */}
               <div className="bg-zinc-800 rounded-lg p-4">
@@ -1311,20 +1400,44 @@ export default function Home() {
 
               {/* Next Steps */}
               <div className="bg-blue-900/30 border border-blue-800 rounded-lg p-4">
-                <h3 className="text-lg font-semibold mb-2 text-blue-400">Next Steps</h3>
+                <h3 className="text-lg font-semibold mb-2 text-blue-400">Automatic Signing</h3>
+                <p className="text-sm text-zinc-300 mb-2">
+                  Your wallet will automatically prompt you to sign this session.
+                </p>
                 <ol className="list-decimal list-inside space-y-2 text-sm">
-                  <li>Both parties will be notified to sign the session</li>
-                  <li>Once signed, funds will be allocated in the state channel</li>
-                  <li>Trade will execute automatically on-chain</li>
+                  <li>Approve the signature request in your wallet</li>
+                  <li>Once both parties sign, the session will be submitted to ClearNode</li>
+                  <li>Trade will execute automatically on the state channel</li>
                   <li>Your balances will be updated</li>
                 </ol>
               </div>
 
+              {/* Signature Status */}
+              {signatureStatus && (
+                <div className={`rounded-lg p-4 ${
+                  signatureStatus.signed 
+                    ? 'bg-green-900/30 border border-green-800' 
+                    : isSigning
+                    ? 'bg-blue-900/30 border border-blue-800'
+                    : 'bg-red-900/30 border border-red-800'
+                }`}>
+                  <p className={`text-sm font-medium ${
+                    signatureStatus.signed ? 'text-green-400' : isSigning ? 'text-blue-400' : 'text-red-400'
+                  }`}>
+                    {signatureStatus.message}
+                  </p>
+                </div>
+              )}
+
+              {/* Close Button */}
               <button
-                onClick={() => setShowSessionModal(false)}
-                className="w-full bg-green-600 hover:bg-green-700 text-white py-3 rounded-lg font-semibold transition-colors"
+                onClick={() => {
+                  setShowSessionModal(false);
+                  setSignatureStatus(null);
+                }}
+                className="w-full bg-zinc-700 hover:bg-zinc-600 text-white py-3 rounded-lg font-semibold transition-colors"
               >
-                Got it!
+                Close
               </button>
             </div>
           </div>
