@@ -1,2 +1,6 @@
 node_modules/
 .env
+.clearnode-session-maker.json
+.clearnode-session-taker.json
+.clearnode-session.json
+dist/
