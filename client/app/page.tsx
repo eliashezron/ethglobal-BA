@@ -46,6 +46,9 @@ export default function Home() {
   const [orderType, setOrderType] = useState<"market" | "limit">("limit");
   const [expiry, setExpiry] = useState("1 week");
   const [side, setSide] = useState<OrderSide>("sell");
+  const [orderFormTab, setOrderFormTab] = useState<"long" | "short">("long");
+  const [margin, setMargin] = useState("");
+  const [leverage, setLeverage] = useState(1);
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [userOrders, setUserOrders] = useState<UserOrder[]>([]);
@@ -553,9 +556,9 @@ export default function Home() {
           )}
         </div>
         
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Order Book Display */}
-          <div className="lg:col-span-1 bg-zinc-900 rounded-lg p-6">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* Order Book - Left Side */}
+          <div className="lg:col-span-3 bg-zinc-900 rounded-lg p-6">
             <h2 className="text-xl font-semibold mb-4">Order Book</h2>
             <div className="text-sm mb-4 text-zinc-400">
               {sellToken}/{buyToken}
@@ -621,222 +624,180 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Order Form */}
-          <div className={`lg:col-span-2 bg-zinc-900 rounded-lg p-6 ${editingOrderId ? 'ring-2 ring-blue-500' : ''}`}>
-            {/* Editing Indicator */}
-            {editingOrderId && (
-              <div className="mb-4 p-3 bg-blue-900/30 border border-blue-500 rounded-lg flex items-center gap-2">
-                <svg className="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                </svg>
-                <span className="text-blue-300 text-sm font-medium">Editing Order #{editingOrderId.slice(-8)}</span>
-              </div>
-            )}
-            
-            {/* Price Display with Switch */}
-            <div className="mb-6">
-              <div className="flex items-center justify-between mb-2">
-              <div className="text-sm text-zinc-400">
-                When 1 <span className="inline-flex items-center gap-1">
-                  <Image src={sellToken === "ETH" ? "/eth.png" : "/usdc.png"} alt={sellToken} width={16} height={16} className="rounded-full" />
-                  <span className="font-medium text-white">{sellToken}</span>
-                </span> is worth
-                </div>
-                <button
-                  onClick={handleSwitchTokens}
-                  className="p-2 hover:bg-zinc-800 rounded-lg transition-colors"
-                >
-                  <svg className="w-5 h-5 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
-                  </svg>
-                </button>
-              </div>
-              <div className="flex items-baseline gap-3">
-                <div className="text-5xl font-bold text-white">
-                  {limitPrice
-                    ? parseFloat(limitPrice).toFixed(2)
-                    : marketPrice.toFixed(2)}
-                </div>
-                <div className="text-lg text-zinc-400 flex items-center gap-1">
-                  <Image src={buyToken === "ETH" ? "/eth.png" : "/usdc.png"} alt={buyToken} width={16} height={16} className="rounded-full" />
-                  <span>{buyToken}</span>
-                </div>
-              </div>
-            </div>
+          {/* DexScreener Chart - Middle */}
+          <div className="lg:col-span-6 bg-zinc-900 rounded-lg overflow-hidden">
+            <iframe
+              src="https://dexscreener.com/ethereum/0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640?embed=1&theme=dark&trades=0&info=0"
+              className="w-full h-[600px] border-0"
+              title="DexScreener ETH/USD Chart"
+            />
+          </div>
 
-            {/* Price Adjustment Buttons */}
-            <div className="flex gap-2 mb-8">
-              <button
-                onClick={() => handleLimitPriceChange(marketPrice.toString())}
-                className={`px-6 py-2.5 rounded-lg font-medium transition-colors ${
-                  !limitPrice || parseFloat(limitPrice) === marketPrice
-                    ? "bg-white text-black"
-                    : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
-                }`}
-              >
-                Market
-              </button>
-              <button
-                onClick={() => handlePercentageClick(1)}
-                className="px-6 py-2.5 rounded-lg font-medium bg-zinc-800 text-zinc-400 hover:bg-zinc-700 transition-colors"
-              >
-                +1%
-              </button>
-              <button
-                onClick={() => handlePercentageClick(5)}
-                className="px-6 py-2.5 rounded-lg font-medium bg-zinc-800 text-zinc-400 hover:bg-zinc-700 transition-colors"
-              >
-                +5%
-              </button>
-              <button
-                onClick={() => handlePercentageClick(10)}
-                className="px-6 py-2.5 rounded-lg font-medium bg-zinc-800 text-zinc-400 hover:bg-zinc-700 transition-colors"
-              >
-                +10%
-              </button>
-            </div>
-
-            {/* Sell Input */}
-            <div className="mb-6">
-              <label className="block text-sm text-zinc-400 mb-3">Sell</label>
-              <div className="bg-zinc-800 rounded-2xl p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <input
-                    type="number"
-                    value={sellAmount}
-                    onChange={(e) => handleSellAmountChange(e.target.value)}
-                    placeholder="0"
-                    className="bg-transparent text-5xl font-bold text-white placeholder-zinc-700 focus:outline-none w-full"
-                  />
-                  <button
-                    className="flex items-center gap-2 bg-zinc-900 px-4 py-2 rounded-xl hover:bg-zinc-950 transition-colors"
-                  >
-                    <Image src={sellToken === "ETH" ? "/eth.png" : "/usdc.png"} alt={sellToken} width={24} height={24} className="rounded-full" />
-                    <span className="text-lg font-semibold">{sellToken}</span>
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                    </svg>
-                  </button>
-                </div>
-                <div className="text-sm text-zinc-500">
-                  Balance: {balances[sellToken]}
-                </div>
-              </div>
-            </div>
-
-            {/* Switch Button */}
-            <div className="flex justify-center -my-3 relative z-10">
-              <button
-                onClick={handleSwitchTokens}
-                className="bg-zinc-950 p-3 rounded-full hover:bg-zinc-900 transition-colors border-4 border-zinc-900"
-              >
-                <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-                </svg>
-              </button>
-            </div>
-
-            {/* Buy Input */}
-            <div className="mb-6">
-              <label className="block text-sm text-zinc-400 mb-3">Buy</label>
-              <div className="bg-zinc-800 rounded-2xl p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <input
-                    type="number"
-                    value={buyAmount}
-                    onChange={(e) => setBuyAmount(e.target.value)}
-                    placeholder="0"
-                    className="bg-transparent text-5xl font-bold text-white placeholder-zinc-700 focus:outline-none w-full"
-                  />
-                  <button
-                    className="flex items-center gap-2 bg-zinc-900 px-4 py-2 rounded-xl hover:bg-zinc-950 transition-colors"
-                  >
-                    <Image src={buyToken === "ETH" ? "/eth.png" : "/usdc.png"} alt={buyToken} width={24} height={24} className="rounded-full" />
-                    <span className="text-lg font-semibold">{buyToken}</span>
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                    </svg>
-                  </button>
-                </div>
-                <div className="text-sm text-zinc-500">
-                  Balance: {balances[buyToken]}
-                </div>
-              </div>
-            </div>
-
-            {/* Expiry */}
-            <div className="mb-8">
-              <label className="block text-sm text-zinc-400 mb-3">Expiry</label>
-              <div className="flex gap-2">
-                {["1 day", "1 week", "1 month", "1 year"].map((period) => (
-                  <button
-                    key={period}
-                    onClick={() => setExpiry(period)}
-                    className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                      expiry === period
-                        ? "bg-zinc-700 text-white"
-                        : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
-                    }`}
-                  >
-                    {period}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Order Summary - Hidden for cleaner design */}
-            {sellAmount && buyAmount && false && (
-              <div className="mb-4 p-3 bg-zinc-800 rounded-lg space-y-1.5 text-xs">
-                <div className="flex justify-between">
-                  <span className="text-zinc-400">Order Type</span>
-                  <span className="text-white">Limit</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-zinc-400">Limit Price</span>
-                  <span className="text-white">
-                    {limitPrice} {buyToken}/{sellToken}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-zinc-400">You Sell</span>
-                  <span className="text-white">
-                    {sellAmount} {sellToken}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-zinc-400">You Receive</span>
-                  <span className="text-white">
-                    {buyAmount} {buyToken}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-zinc-400">Expires</span>
-                  <span className="text-white">{expiry}</span>
-                </div>
-              </div>
-            )}
-
-            {/* Confirm Button */}
-            <button
-              onClick={handleConfirmOrder}
-              disabled={!sellAmount || !buyAmount || !limitPrice}
-              className="w-full bg-zinc-700 hover:bg-zinc-600 disabled:bg-zinc-800 disabled:text-zinc-600 text-white font-semibold py-4 rounded-xl transition-colors text-lg"
-            >
-              {editingOrderId ? "Update Order" : "Place Limit Order"}
-            </button>
-            {editingOrderId && (
+          {/* Order Form - Right Side */}
+          <div className="lg:col-span-3 bg-zinc-900 rounded-lg overflow-hidden">
+            {/* Long/Short Tabs */}
+            <div className="grid grid-cols-2 border-b border-zinc-800">
               <button
                 onClick={() => {
-                  setEditingOrderId(null);
-                  setSellAmount("");
-                  setBuyAmount("");
-                  setLimitPrice("");
+                  setOrderFormTab("long");
+                  setSide("buy");
                 }}
-                className="w-full mt-3 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold py-3 rounded-xl transition-colors"
+                className={`py-4 text-center font-semibold transition-colors ${
+                  orderFormTab === "long"
+                    ? "bg-zinc-950 text-white"
+                    : "text-zinc-400 hover:text-zinc-300"
+                }`}
               >
-                Cancel Edit
+                Long
               </button>
-            )}
+              <button
+                onClick={() => {
+                  setOrderFormTab("short");
+                  setSide("sell");
+                }}
+                className={`py-4 text-center font-semibold transition-colors ${
+                  orderFormTab === "short"
+                    ? "bg-zinc-950 text-white"
+                    : "text-zinc-400 hover:text-zinc-300"
+                }`}
+              >
+                Short
+              </button>
+            </div>
+
+            <div className="p-6">
+              {/* Editing Indicator */}
+              {editingOrderId && (
+                <div className="mb-4 p-3 bg-blue-900/30 border border-blue-500 rounded-lg flex items-center gap-2">
+                  <svg className="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                  </svg>
+                  <span className="text-blue-300 text-sm font-medium">Editing Order #{editingOrderId.slice(-8)}</span>
+                </div>
+              )}
+
+              {/* Price Input */}
+              <div className="mb-6">
+                <label className="block text-sm text-zinc-400 mb-2">Price (USDC)</label>
+                <input
+                  type="number"
+                  value={limitPrice}
+                  onChange={(e) => handleLimitPriceChange(e.target.value)}
+                  placeholder={marketPrice.toFixed(2)}
+                  className="w-full bg-zinc-800 rounded-lg px-4 py-3 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <div className="text-xs text-zinc-500 mt-1">
+                  Market: ${marketPrice.toFixed(2)}
+                </div>
+              </div>
+
+              {/* Amount Input */}
+              <div className="mb-6">
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-sm text-zinc-400">
+                    Amount ({orderFormTab === "long" ? "ETH" : "ETH"})
+                  </label>
+                  <span className="text-xs text-zinc-500">
+                    Balance: {orderFormTab === "long" ? balances.USDC : balances.ETH}
+                  </span>
+                </div>
+                <div className="relative">
+                  <input
+                    type="number"
+                    value={orderFormTab === "long" ? buyAmount : sellAmount}
+                    onChange={(e) => {
+                      if (orderFormTab === "long") {
+                        setBuyAmount(e.target.value);
+                        if (limitPrice) {
+                          setSellAmount((parseFloat(e.target.value) * parseFloat(limitPrice)).toFixed(2));
+                        }
+                      } else {
+                        setSellAmount(e.target.value);
+                        if (limitPrice) {
+                          setBuyAmount((parseFloat(e.target.value) * parseFloat(limitPrice)).toFixed(2));
+                        }
+                      }
+                    }}
+                    placeholder="0.0"
+                    className="w-full bg-zinc-800 rounded-lg px-4 py-3 pr-20 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
+                    <Image 
+                      src={orderFormTab === "long" ? "/eth.png" : "/eth.png"} 
+                      alt="ETH" 
+                      width={20} 
+                      height={20} 
+                      className="rounded-full" 
+                    />
+                    <span className="text-sm font-medium text-white">ETH</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Total */}
+              <div className="mb-6 p-4 bg-zinc-800 rounded-lg">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-zinc-400">Total (USDC)</span>
+                  <div className="flex items-center gap-2">
+                    <Image src="/usdc.png" alt="USDC" width={20} height={20} className="rounded-full" />
+                    <span className="text-lg font-semibold text-white">
+                      {orderFormTab === "long" 
+                        ? (sellAmount || "0.00")
+                        : (buyAmount || "0.00")
+                      }
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Expiry */}
+              <div className="mb-6">
+                <label className="block text-sm text-zinc-400 mb-2">Expiry</label>
+                <div className="grid grid-cols-4 gap-2">
+                  {["1 day", "1 week", "1 month", "1 year"].map((period) => (
+                    <button
+                      key={period}
+                      onClick={() => setExpiry(period)}
+                      className={`px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                        expiry === period
+                          ? "bg-zinc-700 text-white"
+                          : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                      }`}
+                    >
+                      {period.split(" ")[0]}{period.includes("day") ? "d" : period.includes("week") ? "w" : period.includes("month") ? "m" : "y"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Confirm Button */}
+              <button
+                onClick={handleConfirmOrder}
+                disabled={!limitPrice || (orderFormTab === "long" ? !buyAmount : !sellAmount)}
+                className="w-full py-4 rounded-xl font-bold text-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                style={{
+                  background: orderFormTab === "long" 
+                    ? "linear-gradient(to right, #22c55e, #16a34a)" 
+                    : "linear-gradient(to right, #ef4444, #dc2626)",
+                  color: "white"
+                }}
+              >
+                {editingOrderId ? "Update Order" : `${orderFormTab === "long" ? "Buy" : "Sell"} ETH`}
+              </button>
+              {editingOrderId && (
+                <button
+                  onClick={() => {
+                    setEditingOrderId(null);
+                    setSellAmount("");
+                    setBuyAmount("");
+                    setLimitPrice("");
+                  }}
+                  className="w-full mt-3 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold py-3 rounded-xl transition-colors"
+                >
+                  Cancel Edit
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
