@@ -1,3 +1,9 @@
+import { config } from 'dotenv';
+import { env } from "process";
+
+// Load .env file
+config();
+
 export interface YellowEnvConfig {
   readonly rpcUrl: string;
   readonly clearNodeUrl: string;
@@ -22,10 +28,16 @@ export interface ServerEnvConfig {
   readonly postgresUrl: string;
 }
 
+export interface TestEnvConfig {
+  readonly makerPrivateKey: string;
+  readonly takerPrivateKey: string;
+}
+
 export interface EnvConfig {
   readonly nodeEnv: 'development' | 'production' | 'test';
   readonly yellow: YellowEnvConfig;
   readonly server: ServerEnvConfig;
+  readonly test: TestEnvConfig;
 }
 
 function requireEnv(key: string, fallback?: string): string {
@@ -59,9 +71,9 @@ function ensureHexPrefixed(value: string): string {
 }
 
 export function loadEnv(): EnvConfig {
-  const nodeEnv = (process.env.NODE_ENV ?? 'development') as EnvConfig['nodeEnv'];
+const nodeEnv = (process.env.NODE_ENV ?? 'development') as EnvConfig['nodeEnv'];
 
-  return {
+return {
     nodeEnv,
     yellow: {
       rpcUrl: requireEnv('NITROLITE_RPC_URL', 'wss://clearnet.yellow.com/ws'),
@@ -93,6 +105,10 @@ export function loadEnv(): EnvConfig {
       port: requireNumber('PORT', '8080'),
       redisUrl: requireEnv('REDIS_URL', 'redis://localhost:6379'),
       postgresUrl: requireEnv('POSTGRES_URL', 'postgres://postgres:postgres@localhost:5432/yellow'),
+    },
+    test: {
+      makerPrivateKey: ensureHexPrefixed(requireEnv('TEST_MAKER_PRIVATE_KEY')),
+      takerPrivateKey: ensureHexPrefixed(requireEnv('TEST_TAKER_PRIVATE_KEY')),
     },
   };
 }

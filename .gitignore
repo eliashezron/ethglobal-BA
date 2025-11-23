@@ -6,3 +6,7 @@
 .env.production
 node_modules/
 dist/
+server/dist/
+server/src/test/
+.vscode/
+server/.env

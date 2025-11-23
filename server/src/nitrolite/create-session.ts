@@ -180,45 +180,73 @@ export async function generateTradeSessionMessage(
       channelNonce: order.nonce,
     };
 
-    // Create allocations based on order side
-    // For a BUY order: maker receives base token, pays quote token
-    // For a SELL order: maker receives quote token, pays base token
-    const allocations =
-      order.side === 'buy'
-        ? [
-            {
-              participant: formattedMaker,
-              asset: order.quoteToken, // Maker pays quote
-              amount: tradeValue.toString(),
-            },
-            {
-              participant: formattedTaker,
-              asset: order.baseToken, // Taker pays base
-              amount: fillQuantity.toString(),
-            },
-            {
-              participant: serverAddress,
-              asset: order.quoteToken, // Server fee in quote token
-              amount: '0',
-            },
-          ]
-        : [
-            {
-              participant: formattedMaker,
-              asset: order.baseToken, // Maker pays base
-              amount: fillQuantity.toString(),
-            },
-            {
-              participant: formattedTaker,
-              asset: order.quoteToken, // Taker pays quote
-              amount: tradeValue.toString(),
-            },
-            {
-              participant: serverAddress,
-              asset: order.baseToken, // Server fee in base token
-              amount: '0',
-            },
-          ];
+    // Create allocations based on order type
+    // Check if this is a same-asset swap (both baseToken and quoteToken are the same)
+    const isSameAssetSwap = order.baseToken.toLowerCase() === order.quoteToken.toLowerCase();
+    
+    let allocations;
+    
+    if (isSameAssetSwap) {
+      // Same asset swap: both participants contribute the same asset
+      // Example: Both contribute USDC, amounts can be different
+      allocations = [
+        {
+          participant: formattedMaker,
+          asset: order.baseToken, // Same asset for all
+          amount: fillQuantity.toString(), // Maker contributes their amount
+        },
+        {
+          participant: formattedTaker,
+          asset: order.baseToken, // Same asset
+          amount: fillQuantity.toString(), // Taker contributes their amount
+        },
+        {
+          participant: serverAddress,
+          asset: order.baseToken, // Server fee in same asset
+          amount: '0',
+        },
+      ];
+    } else {
+      // Traditional trade: different assets being exchanged
+      // For a BUY order: maker receives base token, pays quote token
+      // For a SELL order: maker receives quote token, pays base token
+      allocations =
+        order.side === 'buy'
+          ? [
+              {
+                participant: formattedMaker,
+                asset: order.quoteToken, // Maker pays quote
+                amount: tradeValue.toString(),
+              },
+              {
+                participant: formattedTaker,
+                asset: order.baseToken, // Taker pays base
+                amount: fillQuantity.toString(),
+              },
+              {
+                participant: serverAddress,
+                asset: order.quoteToken, // Server fee in quote token
+                amount: '0',
+              },
+            ]
+          : [
+              {
+                participant: formattedMaker,
+                asset: order.baseToken, // Maker pays base
+                amount: fillQuantity.toString(),
+              },
+              {
+                participant: formattedTaker,
+                asset: order.quoteToken, // Taker pays quote
+                amount: tradeValue.toString(),
+              },
+              {
+                participant: serverAddress,
+                asset: order.baseToken, // Server fee in base token
+                amount: '0',
+              },
+            ];
+    }
 
     // Create app session data
     const appSessionData = {
