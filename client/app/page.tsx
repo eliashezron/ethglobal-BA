@@ -59,8 +59,11 @@ export default function Home() {
   const [wsStatus, setWsStatus] = useState<"disconnected" | "connecting" | "connected" | "reconnecting" | "reconnect_failed">("disconnected");
   const wsClient = useRef<WebSocketClient | null>(null);
 
-  // Mock current market price
-  const marketPrice = 2819.02;
+  // Real-time market price from DexScreener
+  const [marketPrice, setMarketPrice] = useState(2819.02);
+  const [priceChangePercent, setPriceChangePercent] = useState(0);
+  const [priceDirection, setPriceDirection] = useState<'up' | 'down' | null>(null);
+  const prevPrice = useRef(2819.02);
 
   // Real balances from Base mainnet
   const [balances, setBalances] = useState({
@@ -311,6 +314,36 @@ export default function Home() {
     return `${address.slice(0, 6)}...${address.slice(-4)}`;
   };
 
+  // Fetch real-time price from DexScreener
+  const fetchMarketPrice = async () => {
+    try {
+      // Using WETH/USDC pair on Uniswap V3 (Ethereum mainnet)
+      const response = await fetch('https://api.dexscreener.com/latest/dex/pairs/ethereum/0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640');
+      const data = await response.json();
+      
+      if (data.pair) {
+        const price = parseFloat(data.pair.priceUsd);
+        const change24h = parseFloat(data.pair.priceChange?.h24 || 0);
+        // Determine price direction
+        if (price > prevPrice.current) {
+          setPriceDirection('up');
+        } else if (price < prevPrice.current) {
+          setPriceDirection('down');
+        }
+        prevPrice.current = price;
+        
+        setMarketPrice(price);
+        setPriceChangePercent(change24h);
+        console.log('Updated market price:', price, 'Change 24h:', change24h + '%');
+        
+        // Clear direction indicator after animation
+        setTimeout(() => setPriceDirection(null), 1000);
+      }
+    } catch (error) {
+      console.error('Error fetching market price:', error);
+    }
+  };
+
   // Set mounted state and check for previously connected wallet
   useEffect(() => {
     setMounted(true);
@@ -359,6 +392,21 @@ export default function Home() {
 
     return () => {
       ws.close();
+    };
+  }, []);
+
+  // Fetch market price on mount and set up interval
+  useEffect(() => {
+    // Fetch immediately on mount
+    fetchMarketPrice();
+    
+    // Update every second
+    const priceInterval = setInterval(() => {
+      fetchMarketPrice();
+    }, 5000);
+    
+    return () => {
+      clearInterval(priceInterval);
     };
   }, []);
 
@@ -610,7 +658,7 @@ export default function Home() {
                       onClick={() => setLimitPrice(order.price.toString())}
                     >
                       <div>{order.price.toFixed(2)}</div>
-                      <div className="text-right">{order.amount.toFixed(4)}</div>
+                      <div className="text-right">{order.amount.toFixed(6)}</div>
                       <div className="text-right">{order.total.toFixed(2)}</div>
                     </div>
                   ))
@@ -623,11 +671,35 @@ export default function Home() {
             </div>
 
             {/* Current Market Price */}
-            <div className="my-4 py-2 bg-zinc-800 rounded text-center">
-              <div className="text-lg font-bold text-green-400">
-                {marketPrice.toFixed(2)}
+            <div className="my-4 py-3 bg-zinc-800 rounded text-center relative overflow-hidden">
+              {/* Live Indicator */}
+              <div className="absolute top-2 right-2 flex items-center gap-1">
+                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                <span className="text-xs text-green-500">LIVE</span>
               </div>
-              <div className="text-xs text-zinc-400">Market Price</div>
+              
+              {/* Price with direction indicator */}
+              <div className={`text-2xl font-bold transition-all duration-300 ${
+                priceDirection === 'up' ? 'text-green-400 scale-105' : 
+                priceDirection === 'down' ? 'text-red-400 scale-105' : 
+                'text-green-400'
+              }`}>
+                {priceDirection === 'up' && <span className="text-sm mr-1">▲</span>}
+                {priceDirection === 'down' && <span className="text-sm mr-1">▼</span>}
+                ${marketPrice.toFixed(2)}
+              </div>
+              
+              {/* 24h Change */}
+              <div className="flex items-center justify-center gap-2 mt-1">
+                <div className="text-xs text-zinc-400">Market Price</div>
+                {priceChangePercent !== 0 && (
+                  <div className={`text-xs font-medium ${
+                    priceChangePercent > 0 ? 'text-green-400' : 'text-red-400'
+                  }`}>
+                    {priceChangePercent > 0 ? '+' : ''}{priceChangePercent.toFixed(2)}%
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Bids (Buy Orders) */}
@@ -641,7 +713,7 @@ export default function Home() {
                       onClick={() => setLimitPrice(order.price.toString())}
                     >
                       <div>{order.price.toFixed(2)}</div>
-                      <div className="text-right">{order.amount.toFixed(4)}</div>
+                      <div className="text-right">{order.amount.toFixed(6)}</div>
                       <div className="text-right">{order.total.toFixed(2)}</div>
                     </div>
                   ))
