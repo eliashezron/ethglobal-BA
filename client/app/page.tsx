@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { orderService } from "../lib/supabase";
+import { WebSocketClient } from "../lib/websocket";
 
 type Token = "ETH" | "USDC";
 type OrderSide = "buy" | "sell";
@@ -49,6 +50,9 @@ export default function Home() {
   const [userOrders, setUserOrders] = useState<UserOrder[]>([]);
   const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
   const [isLoadingOrders, setIsLoadingOrders] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  const [wsStatus, setWsStatus] = useState<"disconnected" | "connecting" | "connected" | "reconnecting" | "reconnect_failed">("disconnected");
+  const wsClient = useRef<WebSocketClient | null>(null);
 
   // Mock current market price
   const marketPrice = 2819.02;
@@ -217,13 +221,62 @@ export default function Home() {
     return `${address.slice(0, 6)}...${address.slice(-4)}`;
   };
 
-  // Check for previously connected wallet on mount
+  // Set mounted state and check for previously connected wallet
   useEffect(() => {
+    setMounted(true);
     const savedAddress = localStorage.getItem('walletAddress');
     if (savedAddress) {
       setWalletAddress(savedAddress);
     }
+
+    // Initialize WebSocket client
+    const ws = new WebSocketClient('ws://localhost:8080', {
+      autoReconnect: true,
+      reconnectDelay: 2000,
+      maxReconnectAttempts: 5,
+      requestTimeout: 10000,
+    });
+
+    wsClient.current = ws;
+
+    // Listen to status changes
+    ws.onStatusChange((status) => {
+      console.log('WebSocket status:', status);
+      setWsStatus(status);
+    });
+
+    // Listen to messages
+    ws.onMessage((message) => {
+      console.log('WebSocket message:', message);
+      
+      // Handle real-time order updates
+      if (message.type === 'order.created' || message.type === 'order.updated' || message.type === 'order.cancelled') {
+        // Reload orders when any order changes
+        if (walletAddress) {
+          loadOrders(walletAddress);
+        }
+      }
+    });
+
+    // Listen to errors
+    ws.onError((error) => {
+      console.error('WebSocket error:', error);
+    });
+
+    return () => {
+      ws.close();
+    };
   }, []);
+
+  // Connect WebSocket when wallet is connected
+  useEffect(() => {
+    if (walletAddress && wsClient.current && wsStatus === 'disconnected') {
+      console.log('Connecting WebSocket for wallet:', walletAddress);
+      wsClient.current.connect(walletAddress).catch((error) => {
+        console.error('Failed to connect WebSocket:', error);
+      });
+    }
+  }, [walletAddress, wsStatus]);
 
   // Load orders when wallet is connected
   useEffect(() => {
@@ -311,12 +364,34 @@ export default function Home() {
     }
   };
 
+  // Prevent hydration mismatch by not rendering until mounted
+  if (!mounted) {
+    return null;
+  }
+
   return (
     <div className="min-h-screen bg-black text-white font-sans">
       <div className="container mx-auto px-4 py-8 max-w-7xl">
         {/* Header with Connect Wallet */}
         <div className="flex justify-between items-center mb-8">
-          <h1 className="text-2xl font-bold">P2P Limit Order Book</h1>
+          <div className="flex items-center gap-4">
+            <h1 className="text-2xl font-bold">P2P Limit Order Book</h1>
+            
+            {/* WebSocket Status Indicator */}
+            <div className="flex items-center gap-2 text-sm">
+              <div className={`w-2 h-2 rounded-full ${
+                wsStatus === 'connected' ? 'bg-green-400' :
+                wsStatus === 'connecting' || wsStatus === 'reconnecting' ? 'bg-yellow-400 animate-pulse' :
+                'bg-red-400'
+              }`}></div>
+              <span className="text-zinc-400">
+                {wsStatus === 'connected' ? 'Live' :
+                 wsStatus === 'connecting' ? 'Connecting...' :
+                 wsStatus === 'reconnecting' ? 'Reconnecting...' :
+                 'Offline'}
+              </span>
+            </div>
+          </div>
           
           {walletAddress ? (
             <div className="flex items-center gap-3">
