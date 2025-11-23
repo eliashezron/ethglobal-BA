@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import Image from "next/image";
 import { orderService } from "../lib/supabase";
 import { WebSocketClient } from "../lib/websocket";
 
@@ -51,30 +52,23 @@ export default function Home() {
   const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
   const [isLoadingOrders, setIsLoadingOrders] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const [positionsTab, setPositionsTab] = useState<"open" | "history">("open");
   const [wsStatus, setWsStatus] = useState<"disconnected" | "connecting" | "connected" | "reconnecting" | "reconnect_failed">("disconnected");
   const wsClient = useRef<WebSocketClient | null>(null);
 
   // Mock current market price
   const marketPrice = 2819.02;
 
-  // Mock balances
-  const balances = {
-    ETH: 0,
-    USDC: 0,
-  };
+  // Real balances from Base mainnet
+  const [balances, setBalances] = useState({
+    ETH: "0",
+    USDC: "0",
+  });
 
-  // Mock order book data
+  // Order book data from real orders
   const [orderBook, setOrderBook] = useState<{ bids: Order[]; asks: Order[] }>({
-    bids: [
-      { id: "1", price: 2818.5, amount: 0.5, total: 1409.25, side: "buy" },
-      { id: "2", price: 2817.0, amount: 1.2, total: 3380.4, side: "buy" },
-      { id: "3", price: 2815.5, amount: 0.8, total: 2252.4, side: "buy" },
-    ],
-    asks: [
-      { id: "4", price: 2820.0, amount: 0.6, total: 1692.0, side: "sell" },
-      { id: "5", price: 2821.5, amount: 0.9, total: 2539.35, side: "sell" },
-      { id: "6", price: 2823.0, amount: 1.5, total: 4234.5, side: "sell" },
-    ],
+    bids: [],
+    asks: [],
   });
 
   const handleSwitchTokens = () => {
@@ -96,6 +90,11 @@ export default function Home() {
         setBuyAmount((amount / price).toFixed(6));
       }
     }
+  };
+
+  const handlePercentageClick = (percentage: number) => {
+    const adjustedPrice = marketPrice * (1 + percentage / 100);
+    handleLimitPriceChange(adjustedPrice.toFixed(2));
   };
 
   const handleSellAmountChange = (value: string) => {
@@ -148,6 +147,9 @@ export default function Home() {
         // Fetch fresh data from Supabase
         await loadOrders(walletAddress);
         
+        // Reload order book
+        await loadOrderBook();
+        
         setEditingOrderId(null);
       } else {
         // Create new order in Supabase
@@ -172,6 +174,9 @@ export default function Home() {
         
         // Fetch fresh data from Supabase
         await loadOrders(walletAddress);
+        
+        // Reload order book
+        await loadOrderBook();
       }
 
       // Reset form
@@ -202,6 +207,9 @@ export default function Home() {
       // Save to localStorage for persistence
       localStorage.setItem('walletAddress', address);
       
+      // Fetch real balances from Base mainnet
+      await fetchBalances(address);
+      
       // Load user's orders from Supabase
       await loadOrders(address);
     } catch (error) {
@@ -217,6 +225,65 @@ export default function Home() {
     localStorage.removeItem('walletAddress');
   };
 
+  // Fetch real balances from Base mainnet
+  const fetchBalances = async (address: string) => {
+    try {
+      const rpcUrl = "https://base-mainnet.infura.io/v3/11469fd48540431fb160852a8dbb50a2";
+      
+      // USDC contract address on Base mainnet
+      const usdcAddress = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+      
+      // Fetch ETH balance
+      const ethBalanceResponse = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "eth_getBalance",
+          params: [address, "latest"],
+          id: 1,
+        }),
+      });
+      const ethData = await ethBalanceResponse.json();
+      const ethBalance = ethData.result ? (parseInt(ethData.result, 16) / 1e18).toFixed(4) : "0";
+      
+      // Fetch USDC balance (ERC20)
+      // balanceOf(address) function signature: 0x70a08231
+      const paddedAddress = address.slice(2).padStart(64, "0");
+      const data = "0x70a08231" + paddedAddress;
+      
+      const usdcBalanceResponse = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "eth_call",
+          params: [
+            {
+              to: usdcAddress,
+              data: data,
+            },
+            "latest",
+          ],
+          id: 2,
+        }),
+      });
+      const usdcData = await usdcBalanceResponse.json();
+      const usdcBalance = usdcData.result ? (parseInt(usdcData.result, 16) / 1e6).toFixed(2) : "0"; // USDC has 6 decimals
+      
+      setBalances({
+        ETH: ethBalance,
+        USDC: usdcBalance,
+      });
+    } catch (error) {
+      console.error("Error fetching balances:", error);
+      setBalances({
+        ETH: "0",
+        USDC: "0",
+      });
+    }
+  };
+
   const formatAddress = (address: string) => {
     return `${address.slice(0, 6)}...${address.slice(-4)}`;
   };
@@ -227,6 +294,8 @@ export default function Home() {
     const savedAddress = localStorage.getItem('walletAddress');
     if (savedAddress) {
       setWalletAddress(savedAddress);
+      // Fetch balances for saved address
+      // fetchBalances(savedAddress);
     }
 
     // Initialize WebSocket client
@@ -255,6 +324,8 @@ export default function Home() {
         if (walletAddress) {
           loadOrders(walletAddress);
         }
+        // Reload order book to show updated orders
+        loadOrderBook();
       }
     });
 
@@ -290,6 +361,8 @@ export default function Home() {
           console.log('Order update:', payload);
           // Reload orders on any change
           loadOrders(walletAddress);
+          // Also reload order book
+          loadOrderBook();
         }
       );
 
@@ -298,6 +371,17 @@ export default function Home() {
       };
     }
   }, [walletAddress]);
+
+  // Load order book on mount and periodically
+  useEffect(() => {
+    // Initial load
+    loadOrderBook();
+
+    // Refresh order book every 10 seconds
+    const interval = setInterval(loadOrderBook, 10000);
+
+    return () => clearInterval(interval);
+  }, []);
 
   const handlePercentageAdjustment = (percentage: number) => {
     const adjustedPrice = marketPrice * (1 + percentage / 100);
@@ -361,6 +445,58 @@ export default function Home() {
       console.error("Error loading orders:", error);
     } finally {
       setIsLoadingOrders(false);
+    }
+  };
+
+  const loadOrderBook = async () => {
+    try {
+      const allOrders = await orderService.getOpenOrders();
+      
+      // Separate buy and sell orders for ETH/USDC pair
+      const bids: Order[] = [];
+      const asks: Order[] = [];
+
+      allOrders.forEach((order) => {
+        // Only show ETH/USDC orders
+        if (
+          (order.sell_token === 'ETH' && order.buy_token === 'USDC') ||
+          (order.sell_token === 'USDC' && order.buy_token === 'ETH')
+        ) {
+          const price = parseFloat(order.price);
+          const sellAmount = parseFloat(order.sell_amount);
+          const buyAmount = parseFloat(order.buy_amount);
+
+          if (order.side === 'buy') {
+            // Buy order (bid) - buying ETH with USDC
+            bids.push({
+              id: order.id,
+              price: price,
+              amount: order.sell_token === 'USDC' ? buyAmount : sellAmount,
+              total: order.sell_token === 'USDC' ? sellAmount : buyAmount,
+              side: 'buy',
+            });
+          } else {
+            // Sell order (ask) - selling ETH for USDC
+            asks.push({
+              id: order.id,
+              price: price,
+              amount: order.sell_token === 'ETH' ? sellAmount : buyAmount,
+              total: order.sell_token === 'ETH' ? buyAmount : sellAmount,
+              side: 'sell',
+            });
+          }
+        }
+      });
+
+      // Sort bids (highest price first)
+      bids.sort((a, b) => b.price - a.price);
+      
+      // Sort asks (lowest price first)
+      asks.sort((a, b) => a.price - b.price);
+
+      setOrderBook({ bids, asks });
+    } catch (error) {
+      console.error('Error loading order book:', error);
     }
   };
 
@@ -433,17 +569,23 @@ export default function Home() {
                 <div className="text-right">Total</div>
               </div>
               <div className="space-y-1">
-                {orderBook.asks.slice().reverse().map((order) => (
-                  <div
-                    key={order.id}
-                    className="grid grid-cols-3 gap-2 text-sm text-red-400 hover:bg-zinc-800 cursor-pointer p-1 rounded"
-                    onClick={() => setLimitPrice(order.price.toString())}
-                  >
-                    <div>{order.price.toFixed(2)}</div>
-                    <div className="text-right">{order.amount.toFixed(4)}</div>
-                    <div className="text-right">{order.total.toFixed(2)}</div>
+                {orderBook.asks.length > 0 ? (
+                  orderBook.asks.slice().reverse().map((order) => (
+                    <div
+                      key={order.id}
+                      className="grid grid-cols-3 gap-2 text-sm text-red-400 hover:bg-zinc-800 cursor-pointer p-1 rounded"
+                      onClick={() => setLimitPrice(order.price.toString())}
+                    >
+                      <div>{order.price.toFixed(2)}</div>
+                      <div className="text-right">{order.amount.toFixed(4)}</div>
+                      <div className="text-right">{order.total.toFixed(2)}</div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-center text-zinc-500 text-sm py-2">
+                    No sell orders
                   </div>
-                ))}
+                )}
               </div>
             </div>
 
@@ -458,17 +600,23 @@ export default function Home() {
             {/* Bids (Buy Orders) */}
             <div>
               <div className="space-y-1">
-                {orderBook.bids.map((order) => (
-                  <div
-                    key={order.id}
-                    className="grid grid-cols-3 gap-2 text-sm text-green-400 hover:bg-zinc-800 cursor-pointer p-1 rounded"
-                    onClick={() => setLimitPrice(order.price.toString())}
-                  >
-                    <div>{order.price.toFixed(2)}</div>
-                    <div className="text-right">{order.amount.toFixed(4)}</div>
-                    <div className="text-right">{order.total.toFixed(2)}</div>
+                {orderBook.bids.length > 0 ? (
+                  orderBook.bids.map((order) => (
+                    <div
+                      key={order.id}
+                      className="grid grid-cols-3 gap-2 text-sm text-green-400 hover:bg-zinc-800 cursor-pointer p-1 rounded"
+                      onClick={() => setLimitPrice(order.price.toString())}
+                    >
+                      <div>{order.price.toFixed(2)}</div>
+                      <div className="text-right">{order.amount.toFixed(4)}</div>
+                      <div className="text-right">{order.total.toFixed(2)}</div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-center text-zinc-500 text-sm py-2">
+                    No buy orders
                   </div>
-                ))}
+                )}
               </div>
             </div>
           </div>
@@ -478,202 +626,153 @@ export default function Home() {
             {/* Editing Indicator */}
             {editingOrderId && (
               <div className="mb-4 p-3 bg-blue-900/30 border border-blue-500 rounded-lg flex items-center gap-2">
-                <svg className="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                 </svg>
-                <span className="text-blue-300 font-medium">Editing Order #{editingOrderId.slice(-8)}</span>
+                <span className="text-blue-300 text-sm font-medium">Editing Order #{editingOrderId.slice(-8)}</span>
               </div>
             )}
             
-            {/* Order Type Selector */}
-            <div className="flex gap-2 mb-6">
+            {/* Price Display with Switch */}
+            <div className="mb-6">
+              <div className="flex items-center justify-between mb-2">
+              <div className="text-sm text-zinc-400">
+                When 1 <span className="inline-flex items-center gap-1">
+                  <Image src={sellToken === "ETH" ? "/eth.png" : "/usdc.png"} alt={sellToken} width={16} height={16} className="rounded-full" />
+                  <span className="font-medium text-white">{sellToken}</span>
+                </span> is worth
+                </div>
+                <button
+                  onClick={handleSwitchTokens}
+                  className="p-2 hover:bg-zinc-800 rounded-lg transition-colors"
+                >
+                  <svg className="w-5 h-5 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+                  </svg>
+                </button>
+              </div>
+              <div className="flex items-baseline gap-3">
+                <div className="text-5xl font-bold text-white">
+                  {limitPrice
+                    ? parseFloat(limitPrice).toFixed(2)
+                    : marketPrice.toFixed(2)}
+                </div>
+                <div className="text-lg text-zinc-400 flex items-center gap-1">
+                  <Image src={buyToken === "ETH" ? "/eth.png" : "/usdc.png"} alt={buyToken} width={16} height={16} className="rounded-full" />
+                  <span>{buyToken}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Price Adjustment Buttons */}
+            <div className="flex gap-2 mb-8">
               <button
-                onClick={() => setOrderType("market")}
-                className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                  orderType === "market"
-                    ? "bg-blue-600 text-white"
+                onClick={() => handleLimitPriceChange(marketPrice.toString())}
+                className={`px-6 py-2.5 rounded-lg font-medium transition-colors ${
+                  !limitPrice || parseFloat(limitPrice) === marketPrice
+                    ? "bg-white text-black"
                     : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
                 }`}
               >
                 Market
               </button>
               <button
-                onClick={() => setOrderType("limit")}
-                className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                  orderType === "limit"
-                    ? "bg-blue-600 text-white"
-                    : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
-                }`}
+                onClick={() => handlePercentageClick(1)}
+                className="px-6 py-2.5 rounded-lg font-medium bg-zinc-800 text-zinc-400 hover:bg-zinc-700 transition-colors"
               >
-                Limit
+                +1%
+              </button>
+              <button
+                onClick={() => handlePercentageClick(5)}
+                className="px-6 py-2.5 rounded-lg font-medium bg-zinc-800 text-zinc-400 hover:bg-zinc-700 transition-colors"
+              >
+                +5%
+              </button>
+              <button
+                onClick={() => handlePercentageClick(10)}
+                className="px-6 py-2.5 rounded-lg font-medium bg-zinc-800 text-zinc-400 hover:bg-zinc-700 transition-colors"
+              >
+                +10%
               </button>
             </div>
 
-            {/* Current Price Display */}
-            <div className="mb-6 p-4 bg-zinc-800 rounded-lg">
-              <div className="text-sm text-zinc-400 mb-1">
-                When 1 <span className="inline-flex items-center gap-1">
-                  <span className="w-4 h-4 rounded-full bg-blue-500 inline-block"></span>
-                  <span className="font-medium text-white">{sellToken}</span>
-                </span> is worth
-              </div>
-              <div className="text-3xl font-bold text-white">
-                {orderType === "limit" && limitPrice
-                  ? parseFloat(limitPrice).toFixed(2)
-                  : marketPrice.toFixed(2)}
-              </div>
-              <div className="text-sm text-zinc-400">
-                <span className="inline-flex items-center gap-1">
-                  <span className="w-4 h-4 rounded-full bg-blue-400 inline-block"></span>
-                  <span>{buyToken}</span>
-                </span>
-              </div>
-              
-              {/* Slippage/Premium Buttons */}
-              {orderType === "market" && (
-                <div className="flex gap-2 mt-4">
-                  <button
-                    onClick={() => handlePercentageAdjustment(0)}
-                    className="px-3 py-1 rounded-full bg-zinc-700 text-xs hover:bg-zinc-600"
-                  >
-                    Market
-                  </button>
-                  <button
-                    onClick={() => handlePercentageAdjustment(1)}
-                    className="px-3 py-1 rounded-full bg-zinc-700 text-xs hover:bg-zinc-600"
-                  >
-                    +1%
-                  </button>
-                  <button
-                    onClick={() => handlePercentageAdjustment(5)}
-                    className="px-3 py-1 rounded-full bg-zinc-700 text-xs hover:bg-zinc-600"
-                  >
-                    +5%
-                  </button>
-                  <button
-                    onClick={() => handlePercentageAdjustment(10)}
-                    className="px-3 py-1 rounded-full bg-zinc-700 text-xs hover:bg-zinc-600"
-                  >
-                    +10%
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Limit Price Input (only for limit orders) */}
-            {orderType === "limit" && (
-              <div className="mb-6">
-                <label className="block text-sm text-zinc-400 mb-2">
-                  Limit Price
-                </label>
-                <input
-                  type="number"
-                  value={limitPrice}
-                  onChange={(e) => handleLimitPriceChange(e.target.value)}
-                  placeholder="Enter limit price"
-                  className="w-full bg-zinc-800 rounded-lg px-4 py-3 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                <div className="text-xs text-zinc-500 mt-1">
-                  Current market price: {marketPrice.toFixed(2)} {buyToken}
-                </div>
-              </div>
-            )}
-
             {/* Sell Input */}
-            <div className="mb-4">
-              <label className="block text-sm text-zinc-400 mb-2">Sell</label>
-              <div className="relative">
-                <input
-                  type="number"
-                  value={sellAmount}
-                  onChange={(e) => handleSellAmountChange(e.target.value)}
-                  placeholder="0"
-                  className="w-full bg-zinc-800 rounded-lg px-4 py-3 pr-32 text-2xl text-white placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
+            <div className="mb-6">
+              <label className="block text-sm text-zinc-400 mb-3">Sell</label>
+              <div className="bg-zinc-800 rounded-2xl p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <input
+                    type="number"
+                    value={sellAmount}
+                    onChange={(e) => handleSellAmountChange(e.target.value)}
+                    placeholder="0"
+                    className="bg-transparent text-5xl font-bold text-white placeholder-zinc-700 focus:outline-none w-full"
+                  />
                   <button
-                    onClick={() => {
-                      if (sellToken === "ETH") {
-                        setSellToken("USDC");
-                        setBuyToken("ETH");
-                      } else {
-                        setSellToken("ETH");
-                        setBuyToken("USDC");
-                      }
-                    }}
-                    className="flex items-center gap-2 bg-zinc-700 px-3 py-2 rounded-lg hover:bg-zinc-600"
+                    className="flex items-center gap-2 bg-zinc-900 px-4 py-2 rounded-xl hover:bg-zinc-950 transition-colors"
                   >
-                    <span className="w-5 h-5 rounded-full bg-blue-500 inline-block"></span>
-                    <span className="font-medium">{sellToken}</span>
+                    <Image src={sellToken === "ETH" ? "/eth.png" : "/usdc.png"} alt={sellToken} width={24} height={24} className="rounded-full" />
+                    <span className="text-lg font-semibold">{sellToken}</span>
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                     </svg>
                   </button>
                 </div>
-              </div>
-              <div className="text-sm text-zinc-500 mt-1 text-right">
-                Balance: {balances[sellToken]}
+                <div className="text-sm text-zinc-500">
+                  Balance: {balances[sellToken]}
+                </div>
               </div>
             </div>
 
             {/* Switch Button */}
-            <div className="flex justify-center my-4">
+            <div className="flex justify-center -my-3 relative z-10">
               <button
                 onClick={handleSwitchTokens}
-                className="bg-zinc-800 p-2 rounded-full hover:bg-zinc-700 transition-colors"
+                className="bg-zinc-950 p-3 rounded-full hover:bg-zinc-900 transition-colors border-4 border-zinc-900"
               >
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+                <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
                 </svg>
               </button>
             </div>
 
             {/* Buy Input */}
             <div className="mb-6">
-              <label className="block text-sm text-zinc-400 mb-2">Buy</label>
-              <div className="relative">
-                <input
-                  type="number"
-                  value={buyAmount}
-                  onChange={(e) => setBuyAmount(e.target.value)}
-                  placeholder="0"
-                  className="w-full bg-zinc-800 rounded-lg px-4 py-3 pr-32 text-2xl text-white placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
+              <label className="block text-sm text-zinc-400 mb-3">Buy</label>
+              <div className="bg-zinc-800 rounded-2xl p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <input
+                    type="number"
+                    value={buyAmount}
+                    onChange={(e) => setBuyAmount(e.target.value)}
+                    placeholder="0"
+                    className="bg-transparent text-5xl font-bold text-white placeholder-zinc-700 focus:outline-none w-full"
+                  />
                   <button
-                    onClick={() => {
-                      if (buyToken === "ETH") {
-                        setBuyToken("USDC");
-                        setSellToken("ETH");
-                      } else {
-                        setBuyToken("ETH");
-                        setSellToken("USDC");
-                      }
-                    }}
-                    className="flex items-center gap-2 bg-zinc-700 px-3 py-2 rounded-lg hover:bg-zinc-600"
+                    className="flex items-center gap-2 bg-zinc-900 px-4 py-2 rounded-xl hover:bg-zinc-950 transition-colors"
                   >
-                    <span className="w-5 h-5 rounded-full bg-blue-400 inline-block"></span>
-                    <span className="font-medium">{buyToken}</span>
+                    <Image src={buyToken === "ETH" ? "/eth.png" : "/usdc.png"} alt={buyToken} width={24} height={24} className="rounded-full" />
+                    <span className="text-lg font-semibold">{buyToken}</span>
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                     </svg>
                   </button>
                 </div>
-              </div>
-              <div className="text-sm text-zinc-500 mt-1 text-right">
-                Balance: {balances[buyToken]}
+                <div className="text-sm text-zinc-500">
+                  Balance: {balances[buyToken]}
+                </div>
               </div>
             </div>
 
             {/* Expiry */}
-            <div className="mb-6">
-              <label className="block text-sm text-zinc-400 mb-2">Expiry</label>
+            <div className="mb-8">
+              <label className="block text-sm text-zinc-400 mb-3">Expiry</label>
               <div className="flex gap-2">
                 {["1 day", "1 week", "1 month", "1 year"].map((period) => (
                   <button
                     key={period}
                     onClick={() => setExpiry(period)}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
                       expiry === period
                         ? "bg-zinc-700 text-white"
                         : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
@@ -685,21 +784,19 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Order Summary */}
-            {sellAmount && buyAmount && (
-              <div className="mb-6 p-4 bg-zinc-800 rounded-lg space-y-2 text-sm">
+            {/* Order Summary - Hidden for cleaner design */}
+            {sellAmount && buyAmount && false && (
+              <div className="mb-4 p-3 bg-zinc-800 rounded-lg space-y-1.5 text-xs">
                 <div className="flex justify-between">
                   <span className="text-zinc-400">Order Type</span>
-                  <span className="text-white capitalize">{orderType}</span>
+                  <span className="text-white">Limit</span>
                 </div>
-                {orderType === "limit" && (
-                  <div className="flex justify-between">
-                    <span className="text-zinc-400">Limit Price</span>
-                    <span className="text-white">
-                      {limitPrice} {buyToken}/{sellToken}
-                    </span>
-                  </div>
-                )}
+                <div className="flex justify-between">
+                  <span className="text-zinc-400">Limit Price</span>
+                  <span className="text-white">
+                    {limitPrice} {buyToken}/{sellToken}
+                  </span>
+                </div>
                 <div className="flex justify-between">
                   <span className="text-zinc-400">You Sell</span>
                   <span className="text-white">
@@ -722,14 +819,10 @@ export default function Home() {
             {/* Confirm Button */}
             <button
               onClick={handleConfirmOrder}
-              disabled={!sellAmount || !buyAmount || (orderType === "limit" && !limitPrice)}
-              className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-zinc-700 disabled:text-zinc-500 text-white font-semibold py-4 rounded-lg transition-colors text-lg"
+              disabled={!sellAmount || !buyAmount || !limitPrice}
+              className="w-full bg-zinc-700 hover:bg-zinc-600 disabled:bg-zinc-800 disabled:text-zinc-600 text-white font-semibold py-4 rounded-xl transition-colors text-lg"
             >
-              {editingOrderId
-                ? "Update Order"
-                : orderType === "limit"
-                ? "Place Limit Order"
-                : "Place Market Order"}
+              {editingOrderId ? "Update Order" : "Place Limit Order"}
             </button>
             {editingOrderId && (
               <button
@@ -739,7 +832,7 @@ export default function Home() {
                   setBuyAmount("");
                   setLimitPrice("");
                 }}
-                className="w-full mt-2 bg-zinc-700 hover:bg-zinc-600 text-white font-semibold py-3 rounded-lg transition-colors"
+                className="w-full mt-3 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold py-3 rounded-xl transition-colors"
               >
                 Cancel Edit
               </button>
@@ -747,92 +840,194 @@ export default function Home() {
           </div>
         </div>
 
-        {/* User Orders Section */}
-        {userOrders.length > 0 && (
-          <div className="mt-6 bg-zinc-900 rounded-lg p-6">
-            <h2 className="text-xl font-semibold mb-4">My Orders</h2>
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="text-left text-sm text-zinc-400 border-b border-zinc-800">
-                    <th className="pb-3">Type</th>
-                    <th className="pb-3">Side</th>
-                    <th className="pb-3">Pair</th>
-                    <th className="pb-3">Amount</th>
-                    <th className="pb-3">Price</th>
-                    <th className="pb-3">Status</th>
-                    <th className="pb-3">Expiry</th>
-                    <th className="pb-3">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {userOrders.map((order) => (
-                    <tr
-                      key={order.id}
-                      className="border-b border-zinc-800 text-sm hover:bg-zinc-800"
-                    >
-                      <td className="py-3">
-                        <span className="capitalize">{order.orderType}</span>
-                      </td>
-                      <td className="py-3">
-                        <span
-                          className={`capitalize ${
-                            order.side === "buy"
-                              ? "text-green-400"
-                              : "text-red-400"
-                          }`}
-                        >
-                          {order.side}
-                        </span>
-                      </td>
-                      <td className="py-3">
-                        {order.sellToken}/{order.buyToken}
-                      </td>
-                      <td className="py-3">
-                        {order.sellAmount} {order.sellToken}
-                      </td>
-                      <td className="py-3">${parseFloat(order.price).toFixed(2)}</td>
-                      <td className="py-3">
-                        <span
-                          className={`px-2 py-1 rounded text-xs ${
-                            order.status === "open"
-                              ? "bg-blue-900 text-blue-300"
-                              : order.status === "filled"
-                              ? "bg-green-900 text-green-300"
-                              : "bg-red-900 text-red-300"
-                          }`}
-                        >
-                          {order.status}
-                        </span>
-                      </td>
-                      <td className="py-3">{order.expiry}</td>
-                      <td className="py-3">
-                        <div className="flex gap-2">
-                          {order.status === "open" && (
-                            <>
-                              <button
-                                onClick={() => handleEditOrder(order)}
-                                className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs transition-colors"
-                              >
-                                Edit
-                              </button>
-                              <button
-                                onClick={() => handleCancelOrder(order.id)}
-                                className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-xs transition-colors"
-                              >
-                                Cancel
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+        {/* Positions Section */}
+        <div className="mt-6 bg-zinc-900 rounded-lg overflow-hidden">
+          <h2 className="text-xl font-semibold px-6 pt-6 pb-4">Positions</h2>
+          
+          {/* Tabs */}
+          <div className="flex border-b border-zinc-800">
+            <button
+              onClick={() => setPositionsTab("open")}
+              className={`flex-1 py-4 text-center font-medium transition-colors relative ${
+                positionsTab === "open"
+                  ? "text-white bg-zinc-950"
+                  : "text-zinc-400 hover:text-zinc-300"
+              }`}
+            >
+              Open Positions ({userOrders.filter(o => o.status === "open").length})
+              {positionsTab === "open" && (
+                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white"></div>
+              )}
+            </button>
+            <button
+              onClick={() => setPositionsTab("history")}
+              className={`flex-1 py-4 text-center font-medium transition-colors relative ${
+                positionsTab === "history"
+                  ? "text-white bg-zinc-950"
+                  : "text-zinc-400 hover:text-zinc-300"
+              }`}
+            >
+              Position History ({userOrders.filter(o => o.status !== "open").length})
+              {positionsTab === "history" && (
+                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white"></div>
+              )}
+            </button>
           </div>
-        )}
+
+          {/* Tab Content */}
+          <div className="p-6">
+            {positionsTab === "open" ? (
+              // Open Positions
+              userOrders.filter(o => o.status === "open").length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="text-left text-sm text-zinc-400 border-b border-zinc-800">
+                        <th className="pb-3">Type</th>
+                        <th className="pb-3">Side</th>
+                        <th className="pb-3">Pair</th>
+                        <th className="pb-3">Amount</th>
+                        <th className="pb-3">Price</th>
+                        <th className="pb-3">Status</th>
+                        <th className="pb-3">Expiry</th>
+                        <th className="pb-3">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {userOrders
+                        .filter(o => o.status === "open")
+                        .map((order) => (
+                          <tr
+                            key={order.id}
+                            className="border-b border-zinc-800 text-sm hover:bg-zinc-800"
+                          >
+                            <td className="py-3">
+                              <span className="capitalize">{order.orderType}</span>
+                            </td>
+                            <td className="py-3">
+                              <span
+                                className={`capitalize ${
+                                  order.side === "buy"
+                                    ? "text-green-400"
+                                    : "text-red-400"
+                                }`}
+                              >
+                                {order.side}
+                              </span>
+                            </td>
+                            <td className="py-3">
+                              {order.sellToken}/{order.buyToken}
+                            </td>
+                            <td className="py-3">
+                              {order.sellAmount} {order.sellToken}
+                            </td>
+                            <td className="py-3">${parseFloat(order.price).toFixed(2)}</td>
+                            <td className="py-3">
+                              <span
+                                className="px-2 py-1 rounded text-xs bg-green-900 text-green-300"
+                              >
+                                {order.status}
+                              </span>
+                            </td>
+                            <td className="py-3">{order.expiry}</td>
+                            <td className="py-3">
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => handleEditOrder(order)}
+                                  className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs transition-colors"
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  onClick={() => handleCancelOrder(order.id)}
+                                  className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-xs transition-colors"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-center py-12">
+                  <p className="text-xl text-zinc-300 mb-2">No open positions</p>
+                  <p className="text-sm text-zinc-500">Your open positions will appear here</p>
+                </div>
+              )
+            ) : (
+              // Position History
+              userOrders.filter(o => o.status !== "open").length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="text-left text-sm text-zinc-400 border-b border-zinc-800">
+                        <th className="pb-3">Type</th>
+                        <th className="pb-3">Side</th>
+                        <th className="pb-3">Pair</th>
+                        <th className="pb-3">Amount</th>
+                        <th className="pb-3">Price</th>
+                        <th className="pb-3">Status</th>
+                        <th className="pb-3">Expiry</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {userOrders
+                        .filter(o => o.status !== "open")
+                        .map((order) => (
+                          <tr
+                            key={order.id}
+                            className="border-b border-zinc-800 text-sm hover:bg-zinc-800"
+                          >
+                            <td className="py-3">
+                              <span className="capitalize">{order.orderType}</span>
+                            </td>
+                            <td className="py-3">
+                              <span
+                                className={`capitalize ${
+                                  order.side === "buy"
+                                    ? "text-green-400"
+                                    : "text-red-400"
+                                }`}
+                              >
+                                {order.side}
+                              </span>
+                            </td>
+                            <td className="py-3">
+                              {order.sellToken}/{order.buyToken}
+                            </td>
+                            <td className="py-3">
+                              {order.sellAmount} {order.sellToken}
+                            </td>
+                            <td className="py-3">${parseFloat(order.price).toFixed(2)}</td>
+                            <td className="py-3">
+                              <span
+                                className={`px-2 py-1 rounded text-xs ${
+                                  order.status === "filled"
+                                    ? "bg-blue-900 text-blue-300"
+                                    : "bg-red-900 text-red-300"
+                                }`}
+                              >
+                                {order.status}
+                              </span>
+                            </td>
+                            <td className="py-3">{order.expiry}</td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-center py-12">
+                  <p className="text-xl text-zinc-300 mb-2">No position history</p>
+                  <p className="text-sm text-zinc-500">Your closed positions will appear here</p>
+                </div>
+              )
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
